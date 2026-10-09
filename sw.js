@@ -1,6 +1,6 @@
 // Service worker: makes the app installable and keeps the shell available offline.
 // Strategy: network first (so deploys show up immediately), fall back to cache.
-const CACHE = 'sq-v3';
+const CACHE = 'sq-v4';
 const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'config.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png'];
 
 self.addEventListener('install', (e) => {

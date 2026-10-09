@@ -21,69 +21,162 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 const myId = () => state.user.id;
 
 // ---------- avatars ----------
-// Dress-up avatars use DiceBear's "avataaars" style. A profile's avatar_seed is either:
-//   - an old plain seed (random avatar from before dress-up existed), or
-//   - "cfg:" + a query string of the picks below, e.g. "cfg:top=bob&clothing=hoodie&..."
-// Same column, so no database change was needed. DiceBear rejects unknown values, so
-// every list below is the exact set the API accepts.
-const AV_HAIR_COLORS = ['2c1b18', '4a312c', '724133', 'a55728', 'b58143', 'd6b370', 'ecdcbf', 'c93305', 'f59797', 'e8e1e1'];
-const AV_SKIN = ['ffdbb4', 'edb98a', 'd08b5b', 'ae5d29', '614335', 'fd9841', 'f8d25c'];
-const AV_CLOTH_COLORS = ['262e33', '3c4f5c', '25557c', '5199e4', '65c9ff', 'b1e2ff', 'a7ffc4', 'ffffb1', 'ffafb9', 'ff488e', 'ff5c5c', '929598', 'e6e6e6', 'ffffff'];
-const AV_BG = ['b6e3f4', 'c0aede', 'd1d4f9', 'ffd5dc', 'ffdfbf', 'a7ffc4', 'ffffb1', 'e6e6e6'];
+// Every member is a little full-body character drawn from SVG layers (no outside service, works offline).
+// A profile's avatar_seed is either "fb1:" + a query string of the picks below, or an older plain seed.
+// Older seeds are turned into a random-but-stable character so nobody starts empty; it's saved the first time they edit.
+// Same column as before, so no database change.
+const SKIN = ['ffe0c7', 'f6c9a0', 'e0a878', 'c58c5e', '9a6540', '6b4429'];
+const HAIRC = ['2b1d16', '4a3224', '7a4b2a', 'b5742f', 'e0b45c', 'f0dfa6', 'c0392b', 'f48fb1', '8e6cc6', '4a90d9', '9aa0a6', 'ffffff'];
+const CLOTH = ['e63946', 'f4845f', 'f9c74f', '90be6a', '43aa8b', '4d908e', '4a90d9', '5b4bdb', '9b5de5', 'f15bb5', '2b2540', '6c757d', 'f1f1f1', '8d6e63'];
+const BGS = ['d9ecff', 'e4dcff', 'ffdfe6', 'ffe9d2', 'dcf5e3', 'fff6c9', 'e6e6ee', 'cfeff0'];
 const AV_OPTS = {
-  top: ['shortFlat', 'shortRound', 'shortWaved', 'shortCurly', 'sides', 'theCaesar', 'theCaesarAndSidePart', 'shavedSides', 'frizzle', 'shaggy', 'shaggyMullet', 'dreads01', 'dreads02', 'dreads', 'fro', 'froBand', 'bigHair', 'bob', 'bun', 'curly', 'curvy', 'frida', 'longButNotTooLong', 'miaWallace', 'straight01', 'straight02', 'straightAndStrand', 'hat', 'hijab', 'turban', 'winterHat1', 'winterHat02', 'winterHat03', 'winterHat04'],
-  eyes: ['default', 'happy', 'wink', 'winkWacky', 'hearts', 'squint', 'side', 'surprised', 'eyeRoll', 'closed', 'cry', 'xDizzy'],
-  eyebrows: ['defaultNatural', 'default', 'raisedExcitedNatural', 'raisedExcited', 'flatNatural', 'frownNatural', 'angryNatural', 'angry', 'sadConcernedNatural', 'sadConcerned', 'unibrowNatural', 'upDownNatural', 'upDown'],
-  mouth: ['smile', 'default', 'twinkle', 'tongue', 'eating', 'serious', 'concerned', 'disbelief', 'grimace', 'sad', 'screamOpen', 'vomit'],
-  accessories: ['none', 'round', 'prescription01', 'prescription02', 'wayfarers', 'sunglasses', 'kurt', 'eyepatch'],
-  facialHair: ['none', 'beardLight', 'beardMedium', 'beardMajestic', 'moustacheFancy', 'moustacheMagnum'],
-  clothing: ['hoodie', 'shirtCrewNeck', 'shirtScoopNeck', 'shirtVNeck', 'graphicShirt', 'collarAndSweater', 'blazerAndShirt', 'blazerAndSweater', 'overall'],
-  clothingGraphic: ['bear', 'bat', 'deer', 'diamond', 'pizza', 'skull', 'skullOutline', 'hola', 'cumbia', 'resist'],
+  hair: ['short', 'spiky', 'long', 'bob', 'curly', 'bun', 'ponytail', 'buzz', 'bald'],
+  eyes: ['dot', 'happy', 'sparkle', 'sleepy', 'wink'],
+  mouth: ['smile', 'open', 'flat', 'cat'],
+  blush: ['1', '0'],
+  glasses: ['none', 'round', 'sunglasses'],
+  head: ['none', 'cap', 'beanie', 'bow', 'crown', 'headband'],
+  top: ['tee', 'hoodie', 'tank', 'jacket', 'dress'],
+  bottom: ['pants', 'shorts', 'skirt'],
+  shoes: ['sneakers', 'boots', 'sandals'],
 };
-// Editor layout: category tab -> list of [key, label, kind]. kind 'chips' = text buttons, 'color' = swatches.
+const AV_COLORS = { skin: SKIN, hairColor: HAIRC, topColor: CLOTH, bottomColor: CLOTH, shoeColor: CLOTH, accent: CLOTH, bg: BGS };
+// Editor layout: tab name -> rows of [key, label, kind]. kind 'chips' = text buttons, 'color' = swatches.
 const AV_TABS = [
-  ['Hair', [['top', 'Style', 'chips'], ['hairColor', 'Hair color', 'color']]],
-  ['Face', [['skinColor', 'Skin', 'color'], ['eyes', 'Eyes', 'chips'], ['eyebrows', 'Eyebrows', 'chips'], ['mouth', 'Mouth', 'chips']]],
-  ['Extras', [['accessories', 'Glasses', 'chips'], ['facialHair', 'Facial hair', 'chips']]],
-  ['Outfit', [['clothing', 'Top', 'chips'], ['clothesColor', 'Color (also hat color)', 'color'], ['clothingGraphic', 'Shirt graphic (graphic shirt only)', 'chips']]],
-  ['Backdrop', [['backgroundColor', 'Background', 'color']]],
+  ['Hair', [['hair', 'Style', 'chips'], ['hairColor', 'Hair color', 'color']]],
+  ['Face', [['skin', 'Skin', 'color'], ['eyes', 'Eyes', 'chips'], ['mouth', 'Mouth', 'chips'], ['blush', 'Blush', 'chips'], ['glasses', 'Glasses', 'chips']]],
+  ['Outfit', [['top', 'Top', 'chips'], ['topColor', 'Top color', 'color'], ['bottom', 'Bottom (dress ignores this)', 'chips'], ['bottomColor', 'Bottom color', 'color'], ['shoes', 'Shoes', 'chips'], ['shoeColor', 'Shoe color', 'color']]],
+  ['Extras', [['head', 'Headwear', 'chips'], ['accent', 'Headwear color', 'color']]],
+  ['Backdrop', [['bg', 'Background', 'color']]],
 ];
-const AV_COLORS = { hairColor: AV_HAIR_COLORS, skinColor: AV_SKIN, clothesColor: AV_CLOTH_COLORS, backgroundColor: AV_BG };
-const AV_DEFAULT = { top: 'shortFlat', hairColor: '2c1b18', skinColor: 'edb98a', eyes: 'default', eyebrows: 'defaultNatural', mouth: 'smile', accessories: 'none', facialHair: 'none', clothing: 'hoodie', clothesColor: '5199e4', clothingGraphic: 'bear', backgroundColor: 'b6e3f4' };
-const pick = (a) => a[Math.floor(Math.random() * a.length)];
-const avRandom = () => ({
-  top: pick(AV_OPTS.top), hairColor: pick(AV_HAIR_COLORS), skinColor: pick(AV_SKIN), eyes: pick(AV_OPTS.eyes.slice(0, 6)),
-  eyebrows: pick(AV_OPTS.eyebrows.slice(0, 6)), mouth: pick(AV_OPTS.mouth.slice(0, 5)),
-  accessories: Math.random() < .35 ? pick(AV_OPTS.accessories.slice(1)) : 'none',
-  facialHair: Math.random() < .2 ? pick(AV_OPTS.facialHair.slice(1)) : 'none',
-  clothing: pick(AV_OPTS.clothing), clothesColor: pick(AV_CLOTH_COLORS), clothingGraphic: pick(AV_OPTS.clothingGraphic), backgroundColor: pick(AV_BG),
-});
-// Turn a config object into the "cfg:..." string we store.
-const avEncode = (cfg) => 'cfg:' + new URLSearchParams(cfg).toString();
-// Read a stored avatar_seed back into a full config (falls back to defaults for missing/unknown keys).
+const AV_DEFAULT = { hair: 'short', hairColor: '2b1d16', skin: 'f6c9a0', eyes: 'dot', mouth: 'smile', blush: '1', glasses: 'none', head: 'none', accent: 'f9c74f', top: 'hoodie', topColor: '5b4bdb', bottom: 'pants', bottomColor: '2b2540', shoes: 'sneakers', shoeColor: 'f1f1f1', bg: 'e4dcff' };
+
+const hashStr = (s) => { let h = 2166136261; for (const ch of String(s)) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619); } return h >>> 0; };
+const rngFrom = (seed) => { let a = hashStr(seed); return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; };
+const avRandom = (rand = Math.random) => {
+  const p = (a) => a[Math.floor(rand() * a.length)];
+  return {
+    hair: p(AV_OPTS.hair), hairColor: p(HAIRC), skin: p(SKIN), eyes: p(AV_OPTS.eyes), mouth: p(AV_OPTS.mouth), blush: p(AV_OPTS.blush),
+    glasses: rand() < .25 ? p(AV_OPTS.glasses.slice(1)) : 'none', head: rand() < .35 ? p(AV_OPTS.head.slice(1)) : 'none', accent: p(CLOTH),
+    top: p(AV_OPTS.top), topColor: p(CLOTH), bottom: p(AV_OPTS.bottom), bottomColor: p(CLOTH), shoes: p(AV_OPTS.shoes), shoeColor: p(CLOTH), bg: p(BGS),
+  };
+};
+const avEncode = (cfg) => 'fb1:' + new URLSearchParams(cfg).toString();
+// Seed -> full valid config. Unknown/old seeds become a stable random character.
 const avDecode = (seed) => {
-  const got = Object.fromEntries(new URLSearchParams(String(seed).slice(4)));
+  const s = String(seed ?? '');
+  if (!s.startsWith('fb1:')) return avRandom(rngFrom(s));
+  const got = Object.fromEntries(new URLSearchParams(s.slice(4)));
   const cfg = { ...AV_DEFAULT };
   for (const k of Object.keys(AV_DEFAULT)) {
-    const ok = AV_OPTS[k] ? AV_OPTS[k].includes(got[k]) : AV_COLORS[k]?.includes(got[k]);
-    if (ok) cfg[k] = got[k];
+    const list = AV_OPTS[k] || AV_COLORS[k];
+    if (list.includes(got[k])) cfg[k] = got[k];
   }
   return cfg;
 };
-const avatarUrl = (seed) => {
-  if (!String(seed).startsWith('cfg:')) return `https://api.dicebear.com/9.x/adventurer/svg?seed=${encodeURIComponent(seed)}`; // legacy
-  const c = avDecode(seed);
-  const q = new URLSearchParams({
-    top: c.top, hairColor: c.hairColor, hatColor: c.clothesColor, skinColor: c.skinColor, eyes: c.eyes, eyebrows: c.eyebrows, mouth: c.mouth,
-    clothing: c.clothing, clothesColor: c.clothesColor, clothingGraphic: c.clothingGraphic, backgroundColor: c.backgroundColor,
-    accessoriesProbability: c.accessories === 'none' ? '0' : '100', facialHairProbability: c.facialHair === 'none' ? '0' : '100',
-  });
-  if (c.accessories !== 'none') q.set('accessories', c.accessories);
-  if (c.facialHair !== 'none') q.set('facialHair', c.facialHair);
-  return `https://api.dicebear.com/9.x/avataaars/svg?${q}`;
+const avLabel = (v) => v === '1' ? 'On' : v === '0' ? 'Off' : v === 'none' ? 'None' : v.charAt(0).toUpperCase() + v.slice(1);
+
+// Draw the character. mode 'full' = whole body on transparent; 'head' = square head crop with the backdrop colour (for small spots).
+function avatarSvg(cfg, mode = 'full') {
+  const ink = '#2b2540';
+  const S = '#' + cfg.skin, H = '#' + cfg.hairColor, T = '#' + cfg.topColor, B = '#' + cfg.bottomColor, SH = '#' + cfg.shoeColor, A = '#' + cfg.accent;
+  const shadeLayer = (d) => `<path d="${d}" fill="#000" opacity=".1"/>`;
+  const dress = cfg.top === 'dress';
+  const longSleeve = cfg.top === 'hoodie' || cfg.top === 'jacket';
+  const bare = cfg.top === 'tank';
+  const L = []; // layers, back to front
+
+  L.push('<ellipse cx="50" cy="141" rx="24" ry="4.5" fill="#000" opacity=".12"/>');
+
+  // hair behind head/body
+  if (cfg.hair === 'long') L.push(`<path d="M25 36C22 70 24 86 31 90L69 90C76 86 78 70 75 36Z" fill="${H}"/>`);
+  if (cfg.hair === 'bob') L.push(`<path d="M25 34C22 52 24 63 31 65L69 65C76 63 78 52 75 34Z" fill="${H}"/>`);
+  if (cfg.hair === 'curly') L.push([[30, 28, 11], [40, 19, 12], [50, 16, 12], [60, 19, 12], [70, 28, 11], [26, 42, 8], [74, 42, 8]].map(([x, y, r]) => `<circle cx="${x}" cy="${y}" r="${r}" fill="${H}"/>`).join(''));
+  if (cfg.hair === 'bun') L.push(`<circle cx="50" cy="11" r="9" fill="${H}"/>`);
+  if (cfg.hair === 'ponytail') L.push(`<ellipse cx="83" cy="52" rx="7" ry="17" transform="rotate(-14 83 52)" fill="${H}"/>`);
+
+  // legs (skin) + bottoms
+  L.push(`<rect x="38.5" y="102" width="10.5" height="30" rx="4" fill="${S}"/><rect x="51" y="102" width="10.5" height="30" rx="4" fill="${S}"/>`);
+  if (!dress) {
+    if (cfg.bottom === 'pants') L.push(`<rect x="37" y="98" width="12.5" height="31" rx="4" fill="${B}"/><rect x="50.5" y="98" width="12.5" height="31" rx="4" fill="${B}"/>`);
+    if (cfg.bottom === 'shorts') L.push(`<rect x="37" y="98" width="12.5" height="17" rx="4" fill="${B}"/><rect x="50.5" y="98" width="12.5" height="17" rx="4" fill="${B}"/>`);
+    if (cfg.bottom === 'skirt') L.push(`<path d="M35 98L65 98L73 121L27 121Z" fill="${B}" stroke="${B}" stroke-width="3" stroke-linejoin="round"/>`);
+  }
+  // shoes
+  if (cfg.shoes === 'sneakers') L.push(`<ellipse cx="43" cy="134" rx="9.5" ry="5.2" fill="${SH}"/><ellipse cx="57" cy="134" rx="9.5" ry="5.2" fill="${SH}"/><rect x="33.5" y="136.5" width="19" height="3" rx="1.5" fill="#fff" opacity=".85"/><rect x="47.5" y="136.5" width="19" height="3" rx="1.5" fill="#fff" opacity=".85"/>`);
+  if (cfg.shoes === 'boots') L.push(`<rect x="36.5" y="122" width="13" height="15" rx="4.5" fill="${SH}"/><rect x="50.5" y="122" width="13" height="15" rx="4.5" fill="${SH}"/><ellipse cx="42" cy="136.5" rx="9" ry="4" fill="${SH}"/><ellipse cx="58" cy="136.5" rx="9" ry="4" fill="${SH}"/>`);
+  if (cfg.shoes === 'sandals') L.push(`<ellipse cx="43" cy="135.5" rx="8.5" ry="3.2" fill="${SH}"/><ellipse cx="57" cy="135.5" rx="8.5" ry="3.2" fill="${SH}"/><path d="M38 132Q43 128 48 132M52 132Q57 128 62 132" stroke="${SH}" stroke-width="2.2" fill="none" stroke-linecap="round"/>`);
+
+  // arms
+  const sleeveFull = `<rect x="23.5" y="70" width="10.5" height="31" rx="5.2" fill="${T}"/><rect x="66" y="70" width="10.5" height="31" rx="5.2" fill="${T}"/>`;
+  const armSkin = `<rect x="23.5" y="70" width="10.5" height="31" rx="5.2" fill="${S}"/><rect x="66" y="70" width="10.5" height="31" rx="5.2" fill="${S}"/>`;
+  L.push(longSleeve ? sleeveFull : armSkin + (bare ? '' : `<rect x="23.5" y="70" width="10.5" height="14" rx="5.2" fill="${T}"/><rect x="66" y="70" width="10.5" height="14" rx="5.2" fill="${T}"/>`));
+  L.push(`<circle cx="28.7" cy="102" r="5.3" fill="${S}"/><circle cx="71.3" cy="102" r="5.3" fill="${S}"/>`);
+
+  // torso
+  if (dress) L.push(`<path d="M33 98L67 98L75 124L25 124Z" fill="${T}" stroke="${T}" stroke-width="3" stroke-linejoin="round"/>`);
+  L.push(bare ? `<rect x="36" y="68" width="28" height="38" rx="10" fill="${T}"/>` : `<rect x="33" y="68" width="34" height="38" rx="11" fill="${T}"/>`);
+  if (bare) L.push(`<rect x="36" y="64" width="28" height="9" rx="4" fill="${S}"/>`);
+  if (cfg.top === 'hoodie') L.push(`<path d="M37 66Q50 83 63 66" fill="none" stroke="#000" stroke-opacity=".16" stroke-width="5.5" stroke-linecap="round"/><path d="M45 76L44.5 86M55 76L55.5 86" stroke="#fff" stroke-width="1.6" stroke-linecap="round" opacity=".85"/><rect x="40" y="92" width="20" height="9" rx="4" fill="#000" opacity=".1"/>`);
+  if (cfg.top === 'jacket') L.push(`<line x1="50" y1="70" x2="50" y2="106" stroke="#fff" stroke-opacity=".7" stroke-width="1.8"/><path d="M40 68L50 80L60 68" fill="none" stroke="#000" stroke-opacity=".18" stroke-width="3.2" stroke-linejoin="round"/>`);
+  if (cfg.top === 'tee') L.push(`<path d="M42 68Q50 76 58 68" fill="none" stroke="#000" stroke-opacity=".16" stroke-width="3" stroke-linecap="round"/>`);
+  if (dress) L.push(`<path d="M42 68Q50 76 58 68" fill="none" stroke="#000" stroke-opacity=".16" stroke-width="3" stroke-linecap="round"/>`);
+
+  // neck + head
+  L.push(`<rect x="44.5" y="58" width="11" height="12" rx="4" fill="${S}"/>${shadeLayer('M44.5 66Q50 72 55.5 66L55.5 62L44.5 62Z')}`);
+  L.push(`<circle cx="26.5" cy="42" r="4.2" fill="${S}"/><circle cx="73.5" cy="42" r="4.2" fill="${S}"/>`);
+  L.push(`<ellipse cx="50" cy="40" rx="24" ry="23" fill="${S}"/>`);
+
+  // hair in front
+  const fringe = `<path d="M26 40C25 14 75 14 74 40C72 33 68 28 62 27C54 30 44 24 36 28C30 30 27 34 26 40Z" fill="${H}"/>`;
+  if (['short', 'long', 'bob', 'bun', 'ponytail'].includes(cfg.hair)) L.push(fringe);
+  if (cfg.hair === 'spiky') L.push(`<path d="M25 40L28 17L36 28L42 11L50 26L58 11L64 28L72 17L75 40C70 32 62 28 50 30C38 28 30 32 25 40Z" fill="${H}"/>`);
+  if (cfg.hair === 'curly') L.push(`<path d="M30 35C34 22 66 22 70 35C64 30 56 28 50 29C44 28 36 30 30 35Z" fill="${H}"/>`);
+  if (cfg.hair === 'buzz') L.push(`<path d="M26 38C26 16 74 16 74 38C70 28 60 25 50 25C40 25 30 28 26 38Z" fill="${H}" opacity=".55"/>`);
+  if (cfg.hair === 'long') L.push(`<rect x="23.5" y="34" width="7.5" height="44" rx="3.7" fill="${H}"/><rect x="69" y="34" width="7.5" height="44" rx="3.7" fill="${H}"/>`);
+  if (cfg.hair === 'bob') L.push(`<rect x="23.5" y="34" width="7.5" height="28" rx="3.7" fill="${H}"/><rect x="69" y="34" width="7.5" height="28" rx="3.7" fill="${H}"/>`);
+  if (cfg.hair === 'ponytail') L.push(`<circle cx="72" cy="31" r="3.2" fill="${A}"/>`);
+
+  // face
+  const eyeY = 43;
+  const dot = (x) => `<circle cx="${x}" cy="${eyeY}" r="2.7" fill="${ink}"/>`;
+  const arc = (x) => `<path d="M${x - 3.6} ${eyeY + 1.2}Q${x} ${eyeY - 4.6} ${x + 3.6} ${eyeY + 1.2}" fill="none" stroke="${ink}" stroke-width="2" stroke-linecap="round"/>`;
+  const sparkle = (x) => `<ellipse cx="${x}" cy="${eyeY}" rx="3.3" ry="4.2" fill="${ink}"/><circle cx="${x + 1.1}" cy="${eyeY - 1.5}" r="1.2" fill="#fff"/>`;
+  const sleepy = (x) => `<path d="M${x - 3.6} ${eyeY}Q${x} ${eyeY + 3.8} ${x + 3.6} ${eyeY}" fill="none" stroke="${ink}" stroke-width="2" stroke-linecap="round"/>`;
+  const eyeFns = { dot: [dot, dot], happy: [arc, arc], sparkle: [sparkle, sparkle], sleepy: [sleepy, sleepy], wink: [dot, arc] };
+  const [le, re] = eyeFns[cfg.eyes];
+  L.push(le(40) + re(60));
+  if (cfg.blush === '1') L.push('<ellipse cx="34.5" cy="50" rx="4" ry="2.6" fill="#ff7a93" opacity=".42"/><ellipse cx="65.5" cy="50" rx="4" ry="2.6" fill="#ff7a93" opacity=".42"/>');
+  const mouths = {
+    smile: `<path d="M44 51.5Q50 57.5 56 51.5" fill="none" stroke="${ink}" stroke-width="2" stroke-linecap="round"/>`,
+    open: `<path d="M44.5 51Q50 51.5 55.5 51Q54.5 58.5 50 58.5Q45.5 58.5 44.5 51Z" fill="${ink}"/><path d="M47 56.2Q50 54.8 53 56.2Q52 58.2 50 58.2Q48 58.2 47 56.2Z" fill="#ff7a93"/>`,
+    flat: `<path d="M45.5 53.5L54.5 53.5" stroke="${ink}" stroke-width="2" stroke-linecap="round"/>`,
+    cat: `<path d="M43.5 51.5Q46.8 56.5 50 52Q53.2 56.5 56.5 51.5" fill="none" stroke="${ink}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>`,
+  };
+  L.push(mouths[cfg.mouth]);
+  if (cfg.glasses === 'round') L.push(`<g fill="#fff" fill-opacity=".18" stroke="${ink}" stroke-width="1.7"><circle cx="40" cy="43" r="7.2"/><circle cx="60" cy="43" r="7.2"/></g><path d="M47.2 42.5Q50 40.8 52.8 42.5" fill="none" stroke="${ink}" stroke-width="1.7"/>`);
+  if (cfg.glasses === 'sunglasses') L.push(`<g fill="${ink}"><rect x="31.5" y="38" width="17" height="11" rx="4.5"/><rect x="51.5" y="38" width="17" height="11" rx="4.5"/></g><path d="M48.5 41.5L51.5 41.5" stroke="${ink}" stroke-width="2"/><path d="M35 41.5l4 -1.2" stroke="#fff" stroke-opacity=".5" stroke-width="1.4" stroke-linecap="round"/>`);
+
+  // headwear
+  if (cfg.head === 'cap') L.push(`<path d="M25.5 34C25 8 75 8 74.5 34Z" fill="${A}"/><ellipse cx="50" cy="34" rx="27" ry="4.6" fill="${A}"/><ellipse cx="50" cy="35" rx="27" ry="4.2" fill="#000" opacity=".12"/><circle cx="50" cy="12.5" r="2.4" fill="#000" opacity=".2"/>`);
+  if (cfg.head === 'beanie') L.push(`<path d="M24.5 36C23 4 77 4 75.5 36Z" fill="${A}"/><rect x="24" y="30" width="52" height="8.5" rx="4.2" fill="#000" opacity=".16"/><rect x="24" y="29" width="52" height="8.5" rx="4.2" fill="${A}"/><circle cx="50" cy="6.5" r="5.5" fill="${A}"/><circle cx="50" cy="6.5" r="5.5" fill="#fff" opacity=".25"/>`);
+  if (cfg.head === 'bow') L.push(`<path d="M67 19L54 10L54 28Z M67 19L80 10L80 28Z" fill="${A}" stroke="${A}" stroke-width="2" stroke-linejoin="round"/><circle cx="67" cy="19" r="3.8" fill="${A}"/><circle cx="67" cy="19" r="3.8" fill="#000" opacity=".15"/>`);
+  if (cfg.head === 'crown') L.push(`<path d="M30 25L33 6L42 17L50 3L58 17L67 6L70 25Z" fill="${A}" stroke="${A}" stroke-width="2.4" stroke-linejoin="round"/><circle cx="50" cy="9" r="2" fill="#fff" opacity=".7"/>`);
+  if (cfg.head === 'headband') L.push(`<path d="M25.5 33C29 13 71 13 74.5 33" fill="none" stroke="${A}" stroke-width="5.5" stroke-linecap="round"/>`);
+
+  const body = L.join('');
+  if (mode === 'head') return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="14 4 72 72"><rect x="14" y="4" width="72" height="72" fill="#${cfg.bg}"/>${body}</svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 146">${body}</svg>`;
+}
+const avCache = new Map();
+// data: URI for <img src>. Cached because the same seeds get drawn over and over.
+const avatarUrl = (seed, mode = 'head') => {
+  const key = mode + '|' + seed;
+  if (!avCache.has(key)) avCache.set(key, 'data:image/svg+xml;utf8,' + encodeURIComponent(avatarSvg(avDecode(seed), mode)));
+  return avCache.get(key);
 };
-const avLabel = (v) => v === 'none' ? 'None' : v.replace(/([a-z])([A-Z0-9])/g, '$1 $2').replace(/^./, (c) => c.toUpperCase());
 const avatar = (seed, size = 36, title = '') => `<img class="av" width="${size}" height="${size}" src="${avatarUrl(seed)}" alt="" title="${esc(title)}" loading="lazy">`;
+const figure = (seed, h = 120, cls = '') => `<img class="fig ${cls}" height="${h}" width="${Math.round(h * 100 / 146)}" src="${avatarUrl(seed, 'full')}" alt="">`;
 const memberById = (id) => state.members.find((m) => m.id === id);
 const face = (id, size = 28) => { const m = memberById(id); return avatar(m?.avatar_seed || id, size, m?.display_name || ''); };
 const today = () => { const d = new Date(); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 10); };
@@ -199,6 +292,14 @@ function showGroups() {
       <button class="icon-btn" data-act="profile" aria-label="Your profile">${avatar(state.profile.avatar_seed, 36)}</button>
     </header>
     <main>
+      <section class="hero">
+        <div class="stage" style="background:#${avDecode(state.profile.avatar_seed).bg}">${figure(state.profile.avatar_seed, 150)}</div>
+        <div class="hero-txt">
+          <div class="hi">Your character</div>
+          <p>Dress up your little adventurer. Your crew sees you like this.</p>
+          <button class="btn primary" data-act="profile" style="margin:8px 0 0">👕 Dress up</button>
+        </div>
+      </section>
       ${state.groups.length ? `<div class="section-title">Your crews</div>${list}` : `
         <div class="empty"><div class="big">🧭</div><p>No crew yet. Start one, or join with an invite code from a friend.</p></div>`}
       <div class="section-title">Start a new crew</div>
@@ -282,13 +383,21 @@ const questCard = (q) => `
     ${q.quest_participants.length ? `<div class="faces">${q.quest_participants.map((p) => face(p.user_id, 26)).join('')}</div>` : ''}
   </button>`;
 
+// The "group shot": every member standing together. Tap it to open the Crew tab.
+function crewScene() {
+  const row = state.members.map((m, i) => `<div class="mate" style="--i:${i}">${figure(m.avatar_seed, 128)}<span>${esc((m.display_name || '').split(' ')[0])}${m.id === myId() ? ' ★' : ''}</span></div>`).join('');
+  return `<div class="scene" data-act="tab" data-tab="crew" role="button" aria-label="The crew"><div class="scene-row">${row}</div></div>`;
+}
+
 function viewQuests() {
   const open = state.quests.filter((q) => q.status === 'open');
   const dated = open.filter((q) => q.due_date).sort((a, b) => a.due_date.localeCompare(b.due_date));
   const someday = open.filter((q) => !q.due_date);
   const done = state.quests.filter((q) => q.status === 'done');
-  if (!state.quests.length) return `<div class="empty"><div class="big">🗺️</div><p>No quests yet.<br>Add the first thing you've all been saying "we should do someday".</p></div>`;
+  const scene = state.members.length ? crewScene() : '';
+  if (!state.quests.length) return scene + `<div class="empty"><div class="big">🗺️</div><p>No quests yet.<br>Add the first thing you've all been saying "we should do someday".</p></div>`;
   return `
+    ${scene}
     ${someday.length ? `<div class="nudge"><p><b>${someday.length}</b> quest${someday.length > 1 ? 's have' : ' has'} no date yet.</p><button data-act="spin">🎲 Pick one</button></div>` : ''}
     ${dated.length ? `<div class="section-title">Coming up</div>${dated.map(questCard).join('')}` : ''}
     ${someday.length ? `<div class="section-title">Someday</div>${someday.map(questCard).join('')}` : ''}
@@ -319,7 +428,7 @@ function viewCrew() {
   const doneBy = (id) => state.quests.filter((q) => q.status === 'done' && q.quest_participants.some((p) => p.user_id === id)).length;
   const rows = state.members.map((m) => `
     <div class="card person">
-      ${avatar(m.avatar_seed, 48)}
+      ${figure(m.avatar_seed, 76)}
       <div><div class="nm">${esc(m.display_name)}${m.id === myId() ? ' (you)' : ''}</div><div class="sub">${doneBy(m.id)} quest${doneBy(m.id) === 1 ? '' : 's'} done${m.role === 'admin' ? ' · founder' : ''}</div></div>
     </div>`).join('');
   return `
@@ -495,23 +604,24 @@ function avEditorHtml() {
 function avRefresh() {
   const seed = avEncode(avDraft);
   document.querySelector('input[name=avatar_seed]').value = seed;
-  document.getElementById('av-prev').src = avatarUrl(seed);
+  document.getElementById('av-prev').src = avatarUrl(seed, 'full');
+  document.getElementById('av-stage').style.background = '#' + avDraft.bg;
   document.getElementById('av-editor').innerHTML = avEditorHtml();
 }
 
 function profileSheet() {
   const seed = state.profile.avatar_seed;
   // Old random avatars start the editor from defaults; the user's picks become theirs on save.
-  avDraft = String(seed).startsWith('cfg:') ? avDecode(seed) : { ...AV_DEFAULT };
+  avDraft = avDecode(seed);   // old seeds become their stable random character
   avTab = 0;
   openSheet(`
     <h2>Your profile</h2>
     <form data-form="profile">
       <div class="av-hero">
-        <img id="av-prev" class="av" width="120" height="120" src="${avatarUrl(seed)}" alt="Your avatar">
+        <div id="av-stage" class="stage big" style="background:#${avDraft.bg}"><img id="av-prev" class="fig" height="190" width="130" src="${avatarUrl(avEncode(avDraft), 'full')}" alt="Your character"></div>
         <button type="button" class="btn" data-act="shuffle" style="width:auto;margin:0">🎲 Surprise me</button>
       </div>
-      <input type="hidden" name="avatar_seed" value="${esc(seed)}">
+      <input type="hidden" name="avatar_seed" value="${esc(avEncode(avDraft))}">
       <div id="av-editor" class="av-editor">${avEditorHtml()}</div>
       <label class="lbl" style="margin-top:14px">Display name</label>
       <input type="text" name="display_name" required maxlength="40" value="${esc(state.profile.display_name)}">

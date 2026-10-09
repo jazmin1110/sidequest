@@ -210,3 +210,38 @@ i.done { background: #35b36b; }
 .opt.on { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
 .sw { width: 34px; height: 34px; border-radius: 50%; border: 3px solid var(--card); box-shadow: 0 0 0 1.5px var(--line); padding: 0; }
 .sw.on { box-shadow: 0 0 0 3px var(--accent); }
+
+/* ---------- full-body characters ---------- */
+.fig { display: block; flex: none; object-fit: contain; user-select: none; -webkit-user-drag: none; }
+.stage { display: grid; place-items: end center; border-radius: 18px; padding: 10px 6px 0; position: relative; overflow: hidden; flex: none; }
+.stage::after { content: ""; position: absolute; left: 12%; right: 12%; bottom: 0; height: 14px; border-radius: 50% 50% 0 0; background: rgba(0, 0, 0, .08); }
+.stage .fig { position: relative; z-index: 1; margin-bottom: 4px; }
+.stage.big { width: 150px; padding-top: 14px; }
+
+/* home hero */
+.hero { display: flex; align-items: center; gap: 16px; background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; margin-bottom: 4px; box-shadow: var(--shadow); }
+.hero .stage { width: 112px; height: 168px; }
+.hero-txt { flex: 1; min-width: 0; }
+.hero-txt .hi { font-weight: 900; font-size: 19px; letter-spacing: -.02em; }
+.hero-txt p { color: var(--muted); font-size: 14px; margin-top: 2px; }
+
+/* group shot */
+.scene {
+  margin-bottom: 16px; border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow);
+  background: linear-gradient(180deg, var(--accent-soft) 0%, var(--warm-soft) 100%);
+  overflow-x: auto; scrollbar-width: none; cursor: pointer;
+}
+.scene::-webkit-scrollbar { display: none; }
+.scene-row {
+  display: flex; align-items: flex-end; justify-content: center; width: max-content; min-width: 100%;
+  padding: 18px 18px 0; background: linear-gradient(to bottom, transparent calc(100% - 30px), color-mix(in srgb, var(--accent) 16%, transparent) 0);
+}
+.mate { display: flex; flex-direction: column; align-items: center; margin-left: -14px; margin-bottom: 4px; animation: bob 2.8s ease-in-out infinite; animation-delay: calc(var(--i) * -.45s); }
+.mate:first-child { margin-left: 0; }
+.mate:nth-child(odd) { margin-bottom: 12px; }
+.mate span { font-size: 11px; font-weight: 800; margin-top: 2px; margin-bottom: 4px; background: var(--card); border: 1px solid var(--line); border-radius: 99px; padding: 1px 8px; white-space: nowrap; max-width: 84px; overflow: hidden; text-overflow: ellipsis; }
+@keyframes bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-4px); } }
+@media (prefers-reduced-motion: reduce) { .mate { animation: none; } }
+
+.person .fig { margin: -4px 0; }
+.av-hero { align-items: flex-end; }
