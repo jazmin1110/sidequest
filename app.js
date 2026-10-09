@@ -11,6 +11,7 @@ const state = {
   user: null, profile: null,
   groups: [], group: null, tab: 'quests',
   members: [], quests: [], entries: [],
+  cal: null,       // calendar month being viewed {y, m}; null = this month
   photoUrls: {},   // storage path -> signed url
   chan: null,      // realtime channel
 };
@@ -18,7 +19,70 @@ const state = {
 // ---------- tiny helpers ----------
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const myId = () => state.user.id;
-const avatarUrl = (seed) => `https://api.dicebear.com/9.x/adventurer/svg?seed=${encodeURIComponent(seed)}`;
+
+// ---------- avatars ----------
+// Dress-up avatars use DiceBear's "avataaars" style. A profile's avatar_seed is either:
+//   - an old plain seed (random avatar from before dress-up existed), or
+//   - "cfg:" + a query string of the picks below, e.g. "cfg:top=bob&clothing=hoodie&..."
+// Same column, so no database change was needed. DiceBear rejects unknown values, so
+// every list below is the exact set the API accepts.
+const AV_HAIR_COLORS = ['2c1b18', '4a312c', '724133', 'a55728', 'b58143', 'd6b370', 'ecdcbf', 'c93305', 'f59797', 'e8e1e1'];
+const AV_SKIN = ['ffdbb4', 'edb98a', 'd08b5b', 'ae5d29', '614335', 'fd9841', 'f8d25c'];
+const AV_CLOTH_COLORS = ['262e33', '3c4f5c', '25557c', '5199e4', '65c9ff', 'b1e2ff', 'a7ffc4', 'ffffb1', 'ffafb9', 'ff488e', 'ff5c5c', '929598', 'e6e6e6', 'ffffff'];
+const AV_BG = ['b6e3f4', 'c0aede', 'd1d4f9', 'ffd5dc', 'ffdfbf', 'a7ffc4', 'ffffb1', 'e6e6e6'];
+const AV_OPTS = {
+  top: ['shortFlat', 'shortRound', 'shortWaved', 'shortCurly', 'sides', 'theCaesar', 'theCaesarAndSidePart', 'shavedSides', 'frizzle', 'shaggy', 'shaggyMullet', 'dreads01', 'dreads02', 'dreads', 'fro', 'froBand', 'bigHair', 'bob', 'bun', 'curly', 'curvy', 'frida', 'longButNotTooLong', 'miaWallace', 'straight01', 'straight02', 'straightAndStrand', 'hat', 'hijab', 'turban', 'winterHat1', 'winterHat02', 'winterHat03', 'winterHat04'],
+  eyes: ['default', 'happy', 'wink', 'winkWacky', 'hearts', 'squint', 'side', 'surprised', 'eyeRoll', 'closed', 'cry', 'xDizzy'],
+  eyebrows: ['defaultNatural', 'default', 'raisedExcitedNatural', 'raisedExcited', 'flatNatural', 'frownNatural', 'angryNatural', 'angry', 'sadConcernedNatural', 'sadConcerned', 'unibrowNatural', 'upDownNatural', 'upDown'],
+  mouth: ['smile', 'default', 'twinkle', 'tongue', 'eating', 'serious', 'concerned', 'disbelief', 'grimace', 'sad', 'screamOpen', 'vomit'],
+  accessories: ['none', 'round', 'prescription01', 'prescription02', 'wayfarers', 'sunglasses', 'kurt', 'eyepatch'],
+  facialHair: ['none', 'beardLight', 'beardMedium', 'beardMajestic', 'moustacheFancy', 'moustacheMagnum'],
+  clothing: ['hoodie', 'shirtCrewNeck', 'shirtScoopNeck', 'shirtVNeck', 'graphicShirt', 'collarAndSweater', 'blazerAndShirt', 'blazerAndSweater', 'overall'],
+  clothingGraphic: ['bear', 'bat', 'deer', 'diamond', 'pizza', 'skull', 'skullOutline', 'hola', 'cumbia', 'resist'],
+};
+// Editor layout: category tab -> list of [key, label, kind]. kind 'chips' = text buttons, 'color' = swatches.
+const AV_TABS = [
+  ['Hair', [['top', 'Style', 'chips'], ['hairColor', 'Hair color', 'color']]],
+  ['Face', [['skinColor', 'Skin', 'color'], ['eyes', 'Eyes', 'chips'], ['eyebrows', 'Eyebrows', 'chips'], ['mouth', 'Mouth', 'chips']]],
+  ['Extras', [['accessories', 'Glasses', 'chips'], ['facialHair', 'Facial hair', 'chips']]],
+  ['Outfit', [['clothing', 'Top', 'chips'], ['clothesColor', 'Color (also hat color)', 'color'], ['clothingGraphic', 'Shirt graphic (graphic shirt only)', 'chips']]],
+  ['Backdrop', [['backgroundColor', 'Background', 'color']]],
+];
+const AV_COLORS = { hairColor: AV_HAIR_COLORS, skinColor: AV_SKIN, clothesColor: AV_CLOTH_COLORS, backgroundColor: AV_BG };
+const AV_DEFAULT = { top: 'shortFlat', hairColor: '2c1b18', skinColor: 'edb98a', eyes: 'default', eyebrows: 'defaultNatural', mouth: 'smile', accessories: 'none', facialHair: 'none', clothing: 'hoodie', clothesColor: '5199e4', clothingGraphic: 'bear', backgroundColor: 'b6e3f4' };
+const pick = (a) => a[Math.floor(Math.random() * a.length)];
+const avRandom = () => ({
+  top: pick(AV_OPTS.top), hairColor: pick(AV_HAIR_COLORS), skinColor: pick(AV_SKIN), eyes: pick(AV_OPTS.eyes.slice(0, 6)),
+  eyebrows: pick(AV_OPTS.eyebrows.slice(0, 6)), mouth: pick(AV_OPTS.mouth.slice(0, 5)),
+  accessories: Math.random() < .35 ? pick(AV_OPTS.accessories.slice(1)) : 'none',
+  facialHair: Math.random() < .2 ? pick(AV_OPTS.facialHair.slice(1)) : 'none',
+  clothing: pick(AV_OPTS.clothing), clothesColor: pick(AV_CLOTH_COLORS), clothingGraphic: pick(AV_OPTS.clothingGraphic), backgroundColor: pick(AV_BG),
+});
+// Turn a config object into the "cfg:..." string we store.
+const avEncode = (cfg) => 'cfg:' + new URLSearchParams(cfg).toString();
+// Read a stored avatar_seed back into a full config (falls back to defaults for missing/unknown keys).
+const avDecode = (seed) => {
+  const got = Object.fromEntries(new URLSearchParams(String(seed).slice(4)));
+  const cfg = { ...AV_DEFAULT };
+  for (const k of Object.keys(AV_DEFAULT)) {
+    const ok = AV_OPTS[k] ? AV_OPTS[k].includes(got[k]) : AV_COLORS[k]?.includes(got[k]);
+    if (ok) cfg[k] = got[k];
+  }
+  return cfg;
+};
+const avatarUrl = (seed) => {
+  if (!String(seed).startsWith('cfg:')) return `https://api.dicebear.com/9.x/adventurer/svg?seed=${encodeURIComponent(seed)}`; // legacy
+  const c = avDecode(seed);
+  const q = new URLSearchParams({
+    top: c.top, hairColor: c.hairColor, hatColor: c.clothesColor, skinColor: c.skinColor, eyes: c.eyes, eyebrows: c.eyebrows, mouth: c.mouth,
+    clothing: c.clothing, clothesColor: c.clothesColor, clothingGraphic: c.clothingGraphic, backgroundColor: c.backgroundColor,
+    accessoriesProbability: c.accessories === 'none' ? '0' : '100', facialHairProbability: c.facialHair === 'none' ? '0' : '100',
+  });
+  if (c.accessories !== 'none') q.set('accessories', c.accessories);
+  if (c.facialHair !== 'none') q.set('facialHair', c.facialHair);
+  return `https://api.dicebear.com/9.x/avataaars/svg?${q}`;
+};
+const avLabel = (v) => v === 'none' ? 'None' : v.replace(/([a-z])([A-Z0-9])/g, '$1 $2').replace(/^./, (c) => c.toUpperCase());
 const avatar = (seed, size = 36, title = '') => `<img class="av" width="${size}" height="${size}" src="${avatarUrl(seed)}" alt="" title="${esc(title)}" loading="lazy">`;
 const memberById = (id) => state.members.find((m) => m.id === id);
 const face = (id, size = 28) => { const m = memberById(id); return avatar(m?.avatar_seed || id, size, m?.display_name || ''); };
@@ -196,7 +260,7 @@ function unsubscribe() { if (state.chan) { sb.removeChannel(state.chan); state.c
 function render() {
   if (!state.group) return;
   const g = state.group;
-  const tabs = [['quests', '🗺️', 'Quests'], ['diary', '📖', 'Diary'], ['crew', '👥', 'Crew']];
+  const tabs = [['quests', '🗺️', 'Quests'], ['calendar', '📅', 'Calendar'], ['diary', '📖', 'Diary'], ['crew', '👥', 'Crew']];
   $app.innerHTML = `
     <header class="top">
       <button class="icon-btn" data-act="back" aria-label="All crews">‹</button>
@@ -206,8 +270,8 @@ function render() {
       </div>
       <button class="icon-btn" data-act="profile" aria-label="Your profile">${avatar(state.profile.avatar_seed, 36)}</button>
     </header>
-    <main>${state.tab === 'quests' ? viewQuests() : state.tab === 'diary' ? viewDiary() : viewCrew()}</main>
-    ${state.tab === 'quests' ? `<button class="fab" data-act="new-quest">＋ New quest</button>` : ''}
+    <main>${state.tab === 'quests' ? viewQuests() : state.tab === 'calendar' ? viewCalendar() : state.tab === 'diary' ? viewDiary() : viewCrew()}</main>
+    ${state.tab === 'quests' || state.tab === 'calendar' ? `<button class="fab" data-act="new-quest">＋ New quest</button>` : ''}
     <nav class="tabs">${tabs.map(([k, ic, lb]) => `<button class="${state.tab === k ? 'on' : ''}" data-act="tab" data-tab="${k}"><span>${ic}</span>${lb}</button>`).join('')}</nav>`;
 }
 
@@ -264,12 +328,89 @@ function viewCrew() {
     <button class="btn danger" data-act="leave" style="margin-top:22px">Leave this crew</button>`;
 }
 
+// ---------- calendar ----------
+// No new database stuff: it just lays out each quest's due_date (or, once done, the day it was done).
+const pad = (n) => String(n).padStart(2, '0');
+const dayKey = (y, m, d) => `${y}-${pad(m + 1)}-${pad(d)}`;
+const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+
+// The date a quest shows on: finished quests use the day they happened, open ones their due date.
+function questDay(q) {
+  if (q.status === 'done') return state.entries.find((e) => e.quest_id === q.id)?.done_on || q.due_date || null;
+  return q.due_date || null;
+}
+function questsOn(date) { return state.quests.filter((q) => questDay(q) === date); }
+
+function shiftMonth(delta) {
+  const c = state.cal || { y: new Date().getFullYear(), m: new Date().getMonth() };
+  const d = new Date(c.y, c.m + delta, 1);
+  state.cal = { y: d.getFullYear(), m: d.getMonth() };
+  render();
+}
+
+function viewCalendar() {
+  const now = new Date();
+  const { y, m } = state.cal || { y: now.getFullYear(), m: now.getMonth() };
+  const lead = new Date(y, m, 1).getDay();          // blank cells before the 1st (Sunday-first)
+  const total = new Date(y, m + 1, 0).getDate();
+  const t = today();
+  let cells = '';
+  for (let i = 0; i < lead; i++) cells += '<div class="cal-cell blank"></div>';
+  for (let d = 1; d <= total; d++) {
+    const key = dayKey(y, m, d);
+    const qs = questsOn(key);
+    const dots = qs.slice(0, 3).map((q) => `<i class="${q.status}"></i>`).join('') + (qs.length > 3 ? '<b>+</b>' : '');
+    cells += `<button class="cal-cell ${key === t ? 'today' : ''} ${qs.length ? 'has' : ''}" data-act="cal-day" data-date="${key}"><span>${d}</span><div class="dots">${dots}</div></button>`;
+  }
+  const monthPrefix = `${y}-${pad(m + 1)}-`;
+  const inMonth = state.quests.filter((q) => (questDay(q) || '').startsWith(monthPrefix)).sort((a, b) => questDay(a).localeCompare(questDay(b)));
+  return `
+    <div class="cal-head">
+      <button class="icon-btn" data-act="cal-prev" aria-label="Previous month">‹</button>
+      <div class="cal-title"><b>${MONTHS[m]}</b> ${y}</div>
+      <button class="icon-btn" data-act="cal-next" aria-label="Next month">›</button>
+    </div>
+    <div class="cal-grid">
+      ${['S', 'M', 'T', 'W', 'T', 'F', 'S'].map((d) => `<div class="cal-dow">${d}</div>`).join('')}
+      ${cells}
+    </div>
+    <div class="cal-legend"><i class="open"></i> planned <i class="done"></i> done <button class="linkish" data-act="cal-today">Today</button></div>
+    <div class="section-title">${MONTHS[m]} plans</div>
+    ${inMonth.length ? inMonth.map(questCard).join('') : `<div class="empty" style="padding:18px"><p>Nothing planned this month.<br>Tap a day to add a quest.</p></div>`}`;
+}
+
+function daySheet(date) {
+  const qs = questsOn(date);
+  openSheet(`
+    <h2>${fmtDate(date)}</h2>
+    ${qs.length ? qs.map(questCard).join('') : '<p class="meta" style="margin-bottom:12px">Nothing planned yet.</p>'}
+    <button class="btn primary" data-act="new-quest-on" data-date="${date}">＋ New quest on this day</button>`);
+}
+
+// Export a quest to the phone's calendar app as a standard .ics file (all-day event).
+function downloadIcs(q) {
+  if (!q?.due_date) return toast('Give the quest a date first');
+  const compact = (d) => d.replaceAll('-', '');
+  const next = new Date(q.due_date + 'T00:00:00'); next.setDate(next.getDate() + 1);
+  const end = `${next.getFullYear()}${pad(next.getMonth() + 1)}${pad(next.getDate())}`;
+  const txt = (s) => String(s ?? '').replace(/\\/g, '\\\\').replace(/\n/g, '\\n').replace(/,/g, '\\,').replace(/;/g, '\\;');
+  const ics = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//SideQuest//EN', 'BEGIN:VEVENT',
+    `UID:${q.id}@sidequest`, `DTSTAMP:${new Date().toISOString().replace(/[-:]/g, '').slice(0, 15)}Z`,
+    `DTSTART;VALUE=DATE:${compact(q.due_date)}`, `DTEND;VALUE=DATE:${end}`,
+    `SUMMARY:${txt('SideQuest: ' + q.title)}`, q.location ? `LOCATION:${txt(q.location)}` : '', q.details ? `DESCRIPTION:${txt(q.details)}` : '',
+    'END:VEVENT', 'END:VCALENDAR'].filter(Boolean).join('\r\n');
+  const url = URL.createObjectURL(new Blob([ics], { type: 'text/calendar' }));
+  const a = Object.assign(document.createElement('a'), { href: url, download: 'sidequest.ics' });
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+
 // ---------- sheets: quests ----------
 const whoIn = (selected = []) => `<div class="who">${state.members.map((m) => `
   <label class="chip"><input type="checkbox" name="who" value="${m.id}" ${selected.includes(m.id) ? 'checked' : ''}>${avatar(m.avatar_seed, 26)}<span>${esc(m.display_name)}</span></label>`).join('')}</div>`;
 const checkedWho = (f) => [...f.querySelectorAll('input[name=who]:checked')].map((i) => i.value);
 
-function newQuestSheet() {
+function newQuestSheet(date = '') {
   openSheet(`
     <h2>New quest</h2>
     <form data-form="newQuest">
@@ -277,7 +418,7 @@ function newQuestSheet() {
       <textarea name="details" maxlength="2000" placeholder="Details (optional)"></textarea>
       <input type="text" name="location" maxlength="120" placeholder="Where? (optional)">
       <label class="lbl">When? (leave empty for someday)</label>
-      <input type="date" name="due_date">
+      <input type="date" name="due_date" value="${esc(date)}">
       <label class="lbl">Who's in?</label>
       ${whoIn([myId()])}
       <button class="btn primary">Add quest</button>
@@ -300,6 +441,7 @@ function questSheet(q) {
       <button class="btn">Save changes</button>
     </form>
     <button class="btn primary" data-act="complete" data-id="${q.id}">✅ We did it!</button>
+    ${q.due_date ? `<button class="btn" data-act="ics" data-id="${q.id}">📅 Add to my phone calendar</button>` : ''}
     ${q.created_by === myId() ? `<button class="btn danger" data-act="delete-quest" data-id="${q.id}">Delete quest</button>` : ''}`);
 }
 
@@ -333,16 +475,45 @@ function doneSheet(q) {
 }
 
 // ---------- sheet: profile ----------
+let avDraft = null;  // avatar being edited (config object) while the profile sheet is open
+let avTab = 0;       // which editor tab is showing
+
+// The editor body (tabs + options). Re-rendered on every pick so the highlight and preview stay in sync.
+function avEditorHtml() {
+  const [, rows] = AV_TABS[avTab];
+  const body = rows.map(([key, label, kind]) => {
+    const vals = kind === 'color' ? AV_COLORS[key] : AV_OPTS[key];
+    const btns = vals.map((v) => kind === 'color'
+      ? `<button type="button" class="sw ${avDraft[key] === v ? 'on' : ''}" style="background:#${v}" data-act="av-opt" data-key="${key}" data-val="${v}" aria-label="${v}"></button>`
+      : `<button type="button" class="opt ${avDraft[key] === v ? 'on' : ''}" data-act="av-opt" data-key="${key}" data-val="${v}">${avLabel(v)}</button>`).join('');
+    return `<label class="lbl">${label}</label><div class="opts ${kind}">${btns}</div>`;
+  }).join('');
+  return `
+    <div class="avtabs">${AV_TABS.map(([name], i) => `<button type="button" class="${i === avTab ? 'on' : ''}" data-act="av-tab" data-i="${i}">${name}</button>`).join('')}</div>
+    ${body}`;
+}
+function avRefresh() {
+  const seed = avEncode(avDraft);
+  document.querySelector('input[name=avatar_seed]').value = seed;
+  document.getElementById('av-prev').src = avatarUrl(seed);
+  document.getElementById('av-editor').innerHTML = avEditorHtml();
+}
+
 function profileSheet() {
+  const seed = state.profile.avatar_seed;
+  // Old random avatars start the editor from defaults; the user's picks become theirs on save.
+  avDraft = String(seed).startsWith('cfg:') ? avDecode(seed) : { ...AV_DEFAULT };
+  avTab = 0;
   openSheet(`
     <h2>Your profile</h2>
     <form data-form="profile">
-      <div style="display:flex;align-items:center;gap:14px;margin-bottom:14px">
-        <img id="av-prev" class="av" width="72" height="72" src="${avatarUrl(state.profile.avatar_seed)}" alt="">
-        <button type="button" class="btn" data-act="shuffle" style="width:auto;margin:0">🎲 Shuffle avatar</button>
+      <div class="av-hero">
+        <img id="av-prev" class="av" width="120" height="120" src="${avatarUrl(seed)}" alt="Your avatar">
+        <button type="button" class="btn" data-act="shuffle" style="width:auto;margin:0">🎲 Surprise me</button>
       </div>
-      <input type="hidden" name="avatar_seed" value="${esc(state.profile.avatar_seed)}">
-      <label class="lbl">Display name</label>
+      <input type="hidden" name="avatar_seed" value="${esc(seed)}">
+      <div id="av-editor" class="av-editor">${avEditorHtml()}</div>
+      <label class="lbl" style="margin-top:14px">Display name</label>
       <input type="text" name="display_name" required maxlength="40" value="${esc(state.profile.display_name)}">
       <button class="btn primary">Save</button>
     </form>
@@ -371,11 +542,17 @@ const acts = {
     } catch { /* user cancelled share */ }
   },
   'profile': () => profileSheet(),
-  'shuffle': () => {
-    const seed = crypto.randomUUID().slice(0, 8);
-    document.querySelector('input[name=avatar_seed]').value = seed;
-    document.getElementById('av-prev').src = avatarUrl(seed);
-  },
+  'shuffle': () => { avDraft = avRandom(); avRefresh(); },
+  'av-tab': (t) => { avTab = Number(t.dataset.i); avRefresh(); },
+  'av-opt': (t) => { avDraft[t.dataset.key] = t.dataset.val; avRefresh(); },
+
+  // calendar
+  'cal-prev': () => { shiftMonth(-1); },
+  'cal-next': () => { shiftMonth(1); },
+  'cal-today': () => { state.cal = null; render(); },
+  'cal-day': (t) => daySheet(t.dataset.date),
+  'new-quest-on': (t) => newQuestSheet(t.dataset.date),
+  'ics': (t) => downloadIcs(state.quests.find((q) => q.id === t.dataset.id)),
   'logout': async () => { await sb.auth.signOut(); },
   'leave': async () => {
     if (!confirm(`Leave "${state.group.name}"? You'll need a new invite to come back.`)) return;
