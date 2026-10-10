@@ -11,6 +11,7 @@ const state = {
   user: null, profile: null,
   groups: [], group: null, tab: 'quests',
   members: [], quests: [], entries: [],
+  filter: null,    // tag key the Quests tab is filtered to (null = all)
   cal: null,       // calendar month being viewed {y, m}; null = this month
   photoUrls: {},   // storage path -> signed url
   chan: null,      // realtime channel
@@ -177,6 +178,13 @@ const avatarUrl = (seed, mode = 'head') => {
 };
 const avatar = (seed, size = 36, title = '') => `<img class="av" width="${size}" height="${size}" src="${avatarUrl(seed)}" alt="" title="${esc(title)}" loading="lazy">`;
 const figure = (seed, h = 120, cls = '') => `<img class="fig ${cls}" height="${h}" width="${Math.round(h * 100 / 146)}" src="${avatarUrl(seed, 'full')}" alt="">`;
+// Quest tags: a fixed list so the filter stays tidy. Max 5 per quest (the database enforces that too).
+const TAGS = [['sports', '⚽', 'Sports'], ['arts', '🎨', 'Arts & crafts'], ['out', '🎉', 'Going out'], ['nature', '🌿', 'Nature'], ['food', '🍜', 'Food'], ['travel', '✈️', 'Travel'], ['games', '🎮', 'Games'], ['music', '🎵', 'Music'], ['learn', '📚', 'Learning'], ['wellness', '🧘', 'Wellness'], ['chill', '🛋️', 'Chill'], ['other', '✨', 'Other']];
+const tagInfo = (k) => TAGS.find((t) => t[0] === k);
+const tagPills = (tags = []) => tags.map(tagInfo).filter(Boolean).map(([, ic, lb]) => `<span class="pill">${ic} ${lb}</span>`).join('');
+const CREW_EMOJI = ['🗺️', '⚔️', '🏕️', '🎒', '🌴', '🎉', '🍜', '🎮', '🎨', '⚽', '🚴', '🏖️', '🎬', '📸', '🎤', '🌈', '🔥', '⭐', '🐙', '🦊', '🐸', '🍕'];
+const crewBadge = (g, size = 44) => `<span class="badge" style="background:#${g.color || 'e4dcff'};width:${size}px;height:${size}px;font-size:${Math.round(size * .55)}px">${esc(g.emoji || '🗺️')}</span>`;
+const GROUP_COLS = 'id,name,invite_code,emoji,color,description,created_at,created_by';
 const memberById = (id) => state.members.find((m) => m.id === id);
 const face = (id, size = 28) => { const m = memberById(id); return avatar(m?.avatar_seed || id, size, m?.display_name || ''); };
 const today = () => { const d = new Date(); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 10); };
@@ -255,7 +263,7 @@ async function afterLogin(user) {
 }
 
 async function loadGroups() {
-  const { data, error } = await sb.from('members').select('groups(id,name,invite_code)').eq('user_id', myId());
+  const { data, error } = await sb.from('members').select(`groups(${GROUP_COLS})`).eq('user_id', myId());
   if (error) return fail(error);
   state.groups = (data || []).map((r) => r.groups).filter(Boolean);
 }
@@ -283,8 +291,8 @@ function showGroups() {
   unsubscribe(); state.group = null; localStorage.removeItem('sq_last');
   const list = state.groups.map((g) => `
     <button class="card" data-act="open-group" data-id="${g.id}">
-      <div class="qt" style="font-weight:800;font-size:18px">${esc(g.name)}</div>
-      <div class="meta">Tap to open</div>
+      <div class="crew-row">${crewBadge(g, 46)}<div><div class="qt" style="font-weight:800;font-size:18px">${esc(g.name)}</div>
+      <div class="meta">${esc(g.description || 'Tap to open')}</div></div></div>
     </button>`).join('');
   $app.innerHTML = `
     <header class="top">
@@ -353,6 +361,10 @@ function subscribe() {
     .on('postgres_changes', { event: '*', schema: 'public', table: 'quests', filter: `group_id=eq.${gid}` }, refresh)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'entries', filter: `group_id=eq.${gid}` }, refresh)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'quest_participants' }, refresh)
+    .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'groups', filter: `id=eq.${gid}` }, async () => {
+      const { data } = await sb.from('groups').select(GROUP_COLS).eq('id', gid).single();
+      if (data && state.group?.id === gid) { Object.assign(state.group, data); render(); }
+    })
     .subscribe();
 }
 function unsubscribe() { if (state.chan) { sb.removeChannel(state.chan); state.chan = null; } }
@@ -365,6 +377,7 @@ function render() {
   $app.innerHTML = `
     <header class="top">
       <button class="icon-btn" data-act="back" aria-label="All crews">‹</button>
+      ${crewBadge(g, 34)}
       <div class="grow">
         <h1>${esc(g.name)}</h1>
         <button class="code-btn" data-act="share">Invite · ${esc(g.invite_code)}</button>
@@ -379,6 +392,7 @@ function render() {
 const questCard = (q) => `
   <button class="card quest ${q.status}" data-act="open-quest" data-id="${q.id}">
     <div class="qt">${esc(q.title)}</div>
+    ${q.tags?.length ? `<div class="pills">${tagPills(q.tags)}</div>` : ''}
     <div class="meta">${q.due_date ? '📅 ' + fmtDate(q.due_date) : ''}${q.location ? ` &nbsp;📍 ${esc(q.location)}` : ''}</div>
     ${q.quest_participants.length ? `<div class="faces">${q.quest_participants.map((p) => face(p.user_id, 26)).join('')}</div>` : ''}
   </button>`;
@@ -389,15 +403,32 @@ function crewScene() {
   return `<div class="scene" data-act="tab" data-tab="crew" role="button" aria-label="The crew"><div class="scene-row">${row}</div></div>`;
 }
 
+// Row of tag chips above the list. Only tags that are actually in use show up.
+function filterBar() {
+  const counts = {};
+  state.quests.forEach((q) => (q.tags || []).forEach((t) => { counts[t] = (counts[t] || 0) + 1; }));
+  const used = TAGS.filter(([k]) => counts[k]);
+  if (!used.length) return '';
+  if (state.filter && !counts[state.filter]) state.filter = null;
+  return `<div class="filters">
+    <button class="${!state.filter ? 'on' : ''}" data-act="filter" data-tag="">All</button>
+    ${used.map(([k, ic, lb]) => `<button class="${state.filter === k ? 'on' : ''}" data-act="filter" data-tag="${k}">${ic} ${lb} <i>${counts[k]}</i></button>`).join('')}
+  </div>`;
+}
+
 function viewQuests() {
-  const open = state.quests.filter((q) => q.status === 'open');
+  const all = state.quests;
+  const filtered = state.filter ? all.filter((q) => (q.tags || []).includes(state.filter)) : all;
+  const open = filtered.filter((q) => q.status === 'open');
   const dated = open.filter((q) => q.due_date).sort((a, b) => a.due_date.localeCompare(b.due_date));
   const someday = open.filter((q) => !q.due_date);
-  const done = state.quests.filter((q) => q.status === 'done');
+  const done = filtered.filter((q) => q.status === 'done');
   const scene = state.members.length ? crewScene() : '';
   if (!state.quests.length) return scene + `<div class="empty"><div class="big">🗺️</div><p>No quests yet.<br>Add the first thing you've all been saying "we should do someday".</p></div>`;
   return `
     ${scene}
+    ${filterBar()}
+    ${!filtered.length ? `<div class="empty" style="padding:24px"><p>No quests with that tag yet.</p></div>` : ''}
     ${someday.length ? `<div class="nudge"><p><b>${someday.length}</b> quest${someday.length > 1 ? 's have' : ' has'} no date yet.</p><button data-act="spin">🎲 Pick one</button></div>` : ''}
     ${dated.length ? `<div class="section-title">Coming up</div>${dated.map(questCard).join('')}` : ''}
     ${someday.length ? `<div class="section-title">Someday</div>${someday.map(questCard).join('')}` : ''}
@@ -431,10 +462,22 @@ function viewCrew() {
       ${figure(m.avatar_seed, 76)}
       <div><div class="nm">${esc(m.display_name)}${m.id === myId() ? ' (you)' : ''}</div><div class="sub">${doneBy(m.id)} quest${doneBy(m.id) === 1 ? '' : 's'} done${m.role === 'admin' ? ' · founder' : ''}</div></div>
     </div>`).join('');
+  const g = state.group;
+  const isFounder = state.members.find((m) => m.id === myId())?.role === 'admin';
+  const totalDone = state.quests.filter((q) => q.status === 'done').length;
+  const card = `
+    <div class="card crew-card">
+      <div class="crew-top">${crewBadge(g, 64)}<div class="grow"><h2>${esc(g.name)}</h2><div class="meta">Since ${g.created_at ? new Date(g.created_at).toLocaleDateString(undefined, { month: 'long', year: 'numeric' }) : '—'}</div></div></div>
+      ${g.description ? `<p class="crew-desc">${esc(g.description)}</p>` : `<p class="crew-desc muted">No description yet. Add your crew's story, motto, or inside joke.</p>`}
+      <div class="crew-stats"><div><b>${state.members.length}</b><span>members</span></div><div><b>${state.quests.length}</b><span>quests</span></div><div><b>${totalDone}</b><span>done</span></div></div>
+      <button class="btn" data-act="edit-crew" style="margin-top:12px">✏️ Edit crew details</button>
+    </div>`;
   return `
+    ${card}
     <div class="section-title">The crew · ${state.members.length}</div>${rows}
     <button class="btn primary" data-act="share" style="margin-top:14px">Invite a friend</button>
-    <button class="btn danger" data-act="leave" style="margin-top:22px">Leave this crew</button>`;
+    ${isFounder ? `<button class="btn ghost" data-act="reset-invite" style="margin-top:6px">🔄 Make a new invite code</button>` : ''}
+    <button class="btn danger" data-act="leave" style="margin-top:12px">Leave this crew</button>`;
 }
 
 // ---------- calendar ----------
@@ -517,6 +560,13 @@ function downloadIcs(q) {
 // ---------- sheets: quests ----------
 const whoIn = (selected = []) => `<div class="who">${state.members.map((m) => `
   <label class="chip"><input type="checkbox" name="who" value="${m.id}" ${selected.includes(m.id) ? 'checked' : ''}>${avatar(m.avatar_seed, 26)}<span>${esc(m.display_name)}</span></label>`).join('')}</div>`;
+const tagPicker = (selected = []) => `<label class="lbl">Tags (optional, up to 5)</label><div class="who tags">${TAGS.map(([k, ic, lb]) => `
+  <label class="chip tagchip"><input type="checkbox" name="tag" value="${k}" ${selected.includes(k) ? 'checked' : ''}><span>${ic} ${lb}</span></label>`).join('')}</div>`;
+const checkedTags = (f) => {
+  const t = [...f.querySelectorAll('input[name=tag]:checked')].map((i) => i.value);
+  if (t.length > 5) throw new Error('Pick up to 5 tags');
+  return t;
+};
 const checkedWho = (f) => [...f.querySelectorAll('input[name=who]:checked')].map((i) => i.value);
 
 function newQuestSheet(date = '') {
@@ -528,6 +578,7 @@ function newQuestSheet(date = '') {
       <input type="text" name="location" maxlength="120" placeholder="Where? (optional)">
       <label class="lbl">When? (leave empty for someday)</label>
       <input type="date" name="due_date" value="${esc(date)}">
+      ${tagPicker([])}
       <label class="lbl">Who's in?</label>
       ${whoIn([myId()])}
       <button class="btn primary">Add quest</button>
@@ -545,6 +596,7 @@ function questSheet(q) {
       <input type="text" name="location" maxlength="120" placeholder="Where?" value="${esc(q.location || '')}">
       <label class="lbl">When?</label>
       <input type="date" name="due_date" value="${q.due_date || ''}">
+      ${tagPicker(q.tags || [])}
       <label class="lbl">Who's in?</label>
       ${whoIn(ids)}
       <button class="btn">Save changes</button>
@@ -581,6 +633,26 @@ function doneSheet(q) {
     ${e?.note ? `<p class="note" style="white-space:pre-wrap;margin:10px 0">${esc(e.note)}</p>` : ''}
     ${e ? photoGrid(e) : ''}
     ${q.created_by === myId() ? `<button class="btn danger" data-act="delete-quest" data-id="${q.id}">Delete quest & diary entry</button>` : ''}`);
+}
+
+// ---------- sheet: edit crew ----------
+function editCrewSheet() {
+  const g = state.group;
+  openSheet(`
+    <h2>Crew details</h2>
+    <form data-form="editCrew">
+      <input type="hidden" name="emoji" value="${esc(g.emoji || '🗺️')}">
+      <input type="hidden" name="color" value="${esc(g.color || 'e4dcff')}">
+      <label class="lbl">Crew name</label>
+      <input type="text" name="name" required maxlength="60" value="${esc(g.name)}">
+      <label class="lbl">Icon</label>
+      <div class="opts" id="crew-emoji">${CREW_EMOJI.map((e) => `<button type="button" class="opt emoji ${e === (g.emoji || '🗺️') ? 'on' : ''}" data-act="crew-emoji" data-val="${e}">${e}</button>`).join('')}</div>
+      <label class="lbl">Color</label>
+      <div class="opts color" id="crew-color">${BGS.map((c) => `<button type="button" class="sw ${c === (g.color || 'e4dcff') ? 'on' : ''}" style="background:#${c}" data-act="crew-color" data-val="${c}" aria-label="${c}"></button>`).join('')}</div>
+      <label class="lbl">About this crew</label>
+      <textarea name="description" maxlength="300" placeholder="Who are you, what's your motto, what's the inside joke?">${esc(g.description || '')}</textarea>
+      <button class="btn primary">Save</button>
+    </form>`);
 }
 
 // ---------- sheet: profile ----------
@@ -655,6 +727,23 @@ const acts = {
   'shuffle': () => { avDraft = avRandom(); avRefresh(); },
   'av-tab': (t) => { avTab = Number(t.dataset.i); avRefresh(); },
   'av-opt': (t) => { avDraft[t.dataset.key] = t.dataset.val; avRefresh(); },
+
+  'filter': (t) => { state.filter = t.dataset.tag || null; render(); },
+  'edit-crew': () => editCrewSheet(),
+  'crew-emoji': (t) => {
+    document.querySelector('input[name=emoji]').value = t.dataset.val;
+    document.querySelectorAll('#crew-emoji .opt').forEach((b) => b.classList.toggle('on', b === t));
+  },
+  'crew-color': (t) => {
+    document.querySelector('input[name=color]').value = t.dataset.val;
+    document.querySelectorAll('#crew-color .sw').forEach((b) => b.classList.toggle('on', b === t));
+  },
+  'reset-invite': async () => {
+    if (!confirm('Make a new invite code? The old code and old invite links will stop working.')) return;
+    const { data, error } = await sb.rpc('reset_invite_code', { gid: state.group.id });
+    if (error) return fail(error);
+    Object.assign(state.group, data); render(); toast('New invite code ready');
+  },
 
   // calendar
   'cal-prev': () => { shiftMonth(-1); },
@@ -735,6 +824,7 @@ const forms = {
       details: fd.get('details').trim() || null,
       location: fd.get('location').trim() || null,
       due_date: fd.get('due_date') || null,
+      tags: checkedTags(f),
       created_by: myId(),
     }).select().single();
     if (error) throw error;
@@ -749,6 +839,7 @@ const forms = {
       details: fd.get('details').trim() || null,
       location: fd.get('location').trim() || null,
       due_date: fd.get('due_date') || null,
+      tags: checkedTags(f),
     }).eq('id', id);
     if (error) throw error;
     await setParticipants(id, checkedWho(f));
@@ -775,6 +866,16 @@ const forms = {
     if (upd.error) throw upd.error;
     await setParticipants(qid, checkedWho(f));
     closeSheet(); state.tab = 'diary'; await reloadGroup(); toast('Saved to the diary 📖');
+  }),
+
+  editCrew: (f) => run(f, async () => {
+    const fd = new FormData(f);
+    const { data, error } = await sb.rpc('update_group', {
+      gid: state.group.id, new_name: fd.get('name').trim(), new_emoji: fd.get('emoji'), new_color: fd.get('color'), new_description: fd.get('description'),
+    });
+    if (error) throw error;
+    Object.assign(state.group, data);   // state.group is the same object as in state.groups, so both update
+    closeSheet(); render(); toast('Crew updated');
   }),
 
   profile: (f) => run(f, async () => {
