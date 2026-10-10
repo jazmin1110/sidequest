@@ -3,6 +3,8 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './config.js';
 
+// A password-reset email link opens the app with #...type=recovery. Remember that before supabase-js clears the URL.
+const RECOVERY = /type=recovery/.test(location.hash + location.search);
 const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const $app = document.getElementById('app');
 
@@ -12,6 +14,7 @@ const state = {
   groups: [], group: null, tab: 'quests',
   members: [], quests: [], entries: [],
   filter: null,    // tag key the Quests tab is filtered to (null = all)
+  comments: [], reactions: [],   // diary comments + emoji reactions for this crew
   cal: null,       // calendar month being viewed {y, m}; null = this month
   photoUrls: {},   // storage path -> signed url
   chan: null,      // realtime channel
@@ -238,10 +241,15 @@ async function boot() {
   const join = new URLSearchParams(location.search).get('join');
   if (join) { localStorage.setItem('sq_join', join.toUpperCase()); history.replaceState({}, '', location.pathname); }
 
-  sb.auth.onAuthStateChange((evt) => { if (evt === 'SIGNED_OUT') { state.user = null; showAuth(); } });
+  sb.auth.onAuthStateChange((evt) => {
+    if (evt === 'SIGNED_OUT') { state.user = null; showAuth(); }
+    if (evt === 'PASSWORD_RECOVERY') showReset();
+  });
 
   const { data: { session } } = await sb.auth.getSession();
-  if (session) await afterLogin(session.user); else showAuth();
+  if (session && RECOVERY) showReset();
+  else if (session) await afterLogin(session.user);
+  else { showAuth(); if (RECOVERY) toast('That reset link expired. Ask for a new one.'); }
 }
 
 async function afterLogin(user) {
@@ -281,8 +289,25 @@ function showAuth() {
         <input type="password" name="password" required minlength="6" placeholder="Password (6+ characters)" autocomplete="current-password">
         <button class="btn primary" data-mode="login">Log in</button>
         <button class="btn" data-mode="signup">Create account</button>
+        <button type="button" class="btn ghost" data-act="forgot">Forgot password?</button>
       </form>
       <p class="hint">Private to you and your friends. No ads, no public feed.</p>
+    </div>`;
+}
+
+// Screen shown after tapping the link in a password-reset email.
+function showReset() {
+  closeSheet(); unsubscribe();
+  $app.innerHTML = `
+    <div class="auth">
+      <div class="logo">🔑</div>
+      <h1>New password</h1>
+      <p class="tag">Pick something you'll remember. 6+ characters.</p>
+      <form data-form="newPassword">
+        <input type="password" name="pw1" required minlength="6" placeholder="New password" autocomplete="new-password">
+        <input type="password" name="pw2" required minlength="6" placeholder="Type it again" autocomplete="new-password">
+        <button class="btn primary">Save password</button>
+      </form>
     </div>`;
 }
 
@@ -344,6 +369,17 @@ async function loadGroupData() {
   state.members = m.data.filter((r) => r.profiles).map((r) => ({ ...r.profiles, role: r.role }));
   state.quests = q.data;
   state.entries = e.data;
+  // comments + reactions for those diary entries
+  const ids = e.data.map((x) => x.id);
+  state.comments = []; state.reactions = [];
+  if (ids.length) {
+    const [c, r] = await Promise.all([
+      sb.from('entry_comments').select('*').in('entry_id', ids).order('created_at', { ascending: true }),
+      sb.from('entry_reactions').select('*').in('entry_id', ids),
+    ]);
+    if (c.error || r.error) return fail(c.error || r.error);
+    state.comments = c.data; state.reactions = r.data;
+  }
   await signPhotos();
 }
 
@@ -352,6 +388,8 @@ const refresh = debounce(async () => {
   if (!state.group) return;
   const y = window.scrollY;
   await loadGroupData(); render(); window.scrollTo(0, y);
+  const open = document.getElementById('sheet')?.dataset.entry;
+  if (open && state.entries.some((x) => x.id === open)) entrySheet(open);   // keep an open comments sheet live
 }, 400);
 
 function subscribe() {
@@ -361,6 +399,8 @@ function subscribe() {
     .on('postgres_changes', { event: '*', schema: 'public', table: 'quests', filter: `group_id=eq.${gid}` }, refresh)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'entries', filter: `group_id=eq.${gid}` }, refresh)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'quest_participants' }, refresh)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'entry_comments' }, refresh)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'entry_reactions' }, refresh)
     .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'groups', filter: `id=eq.${gid}` }, async () => {
       const { data } = await sb.from('groups').select(GROUP_COLS).eq('id', gid).single();
       if (data && state.group?.id === gid) { Object.assign(state.group, data); render(); }
@@ -389,13 +429,21 @@ function render() {
     <nav class="tabs">${tabs.map(([k, ic, lb]) => `<button class="${state.tab === k ? 'on' : ''}" data-act="tab" data-tab="${k}"><span>${ic}</span>${lb}</button>`).join('')}</nav>`;
 }
 
-const questCard = (q) => `
-  <button class="card quest ${q.status}" data-act="open-quest" data-id="${q.id}">
-    <div class="qt">${esc(q.title)}</div>
-    ${q.tags?.length ? `<div class="pills">${tagPills(q.tags)}</div>` : ''}
-    <div class="meta">${q.due_date ? '📅 ' + fmtDate(q.due_date) : ''}${q.location ? ` &nbsp;📍 ${esc(q.location)}` : ''}</div>
-    ${q.quest_participants.length ? `<div class="faces">${q.quest_participants.map((p) => face(p.user_id, 26)).join('')}</div>` : ''}
-  </button>`;
+const questCard = (q) => {
+  const mine = q.quest_participants.some((p) => p.user_id === myId());
+  return `
+  <div class="card quest ${q.status}">
+    <button class="qmain" data-act="open-quest" data-id="${q.id}">
+      <div class="qt">${esc(q.title)}</div>
+      ${q.tags?.length ? `<div class="pills">${tagPills(q.tags)}</div>` : ''}
+      <div class="meta">${q.due_date ? '📅 ' + fmtDate(q.due_date) : ''}${q.location ? ` &nbsp;📍 ${esc(q.location)}` : ''}</div>
+    </button>
+    <div class="qfoot">
+      ${q.quest_participants.length ? `<div class="faces">${q.quest_participants.map((p) => face(p.user_id, 26)).join('')}</div>` : ''}
+      ${q.status === 'open' ? `<button class="imin ${mine ? 'on' : ''}" data-act="imin" data-id="${q.id}">${mine ? "✓ I'm in" : "🙋 I'm in"}</button>` : ''}
+    </div>
+  </div>`;
+};
 
 // The "group shot": every member standing together. Tap it to open the Crew tab.
 function crewScene() {
@@ -435,19 +483,56 @@ function viewQuests() {
     ${done.length ? `<div class="section-title">Done ✓</div>${done.map(questCard).join('')}` : ''}`;
 }
 
+const REACTS = ['❤️', '😂', '🔥', '🥹', '👏'];
+const ago = (iso) => {
+  const m = Math.max(0, Math.round((Date.now() - new Date(iso)) / 60000));
+  return m < 1 ? 'now' : m < 60 ? m + 'm' : m < 1440 ? Math.round(m / 60) + 'h' : Math.round(m / 1440) + 'd';
+};
+const nameOf = (id) => memberById(id)?.display_name || 'Someone';
+const reactBar = (e) => REACTS.map((em) => {
+  const n = state.reactions.filter((r) => r.entry_id === e.id && r.emoji === em).length;
+  const mine = state.reactions.some((r) => r.entry_id === e.id && r.emoji === em && r.user_id === myId());
+  return `<button class="react ${mine ? 'on' : ''}" data-act="react" data-entry="${e.id}" data-emoji="${em}">${em}${n ? ` <i>${n}</i>` : ''}</button>`;
+}).join('');
+
 function viewDiary() {
   if (!state.entries.length) return `<div class="empty"><div class="big">📖</div><p>Your diary is empty.<br>Finish a quest and it lands here.</p></div>`;
   return state.entries.map((e) => {
     const q = state.quests.find((x) => x.id === e.quest_id);
     const who = q ? q.quest_participants.map((p) => face(p.user_id, 26)).join('') : '';
+    const cs = state.comments.filter((c) => c.entry_id === e.id);
+    const last = cs[cs.length - 1];
     return `
       <article class="card entry">
         <div class="head">${face(e.author_id, 34)}<div><h3>${esc(q?.title || 'Quest')}</h3><div class="meta">${fmtDate(e.done_on)}${q?.location ? ` · 📍 ${esc(q.location)}` : ''}</div></div></div>
         ${e.note ? `<p class="note">${esc(e.note)}</p>` : ''}
         ${photoGrid(e)}
         ${who ? `<div class="faces">${who}</div>` : ''}
+        <div class="react-row">${reactBar(e)}<button class="cbtn" data-act="open-entry" data-id="${e.id}">💬 ${cs.length || 'Comment'}</button></div>
+        ${last ? `<button class="cprev" data-act="open-entry" data-id="${e.id}"><b>${esc(nameOf(last.author_id))}</b> ${esc(last.body)}</button>` : ''}
       </article>`;
   }).join('');
+}
+
+// Comments sheet for one diary entry.
+function entrySheet(id) {
+  const e = state.entries.find((x) => x.id === id);
+  if (!e) return;
+  const q = state.quests.find((x) => x.id === e.quest_id);
+  const keep = document.querySelector('#sheet input[name=body]')?.value || '';   // don't lose half-typed text on a live refresh
+  const cs = state.comments.filter((c) => c.entry_id === id);
+  openSheet(`
+    <h2>${esc(q?.title || 'Diary entry')}</h2>
+    <div class="react-row" style="margin-bottom:10px">${reactBar(e)}</div>
+    <div class="comments">${cs.length ? cs.map((c) => `
+      <div class="cmt">${face(c.author_id, 30)}<div class="cbody"><div><b>${esc(nameOf(c.author_id))}</b> <span class="meta">${ago(c.created_at)}</span>${c.author_id === myId() ? ` <button class="x" data-act="del-comment" data-id="${c.id}" aria-label="Delete comment">✕</button>` : ''}</div><p>${esc(c.body)}</p></div></div>`).join('') : `<p class="meta" style="margin:6px 0 12px">No comments yet. Say something nice (or roast them lovingly).</p>`}</div>
+    <form data-form="comment" data-id="${id}" class="row cform">
+      <input type="text" name="body" maxlength="500" required placeholder="Add a comment…" autocomplete="off" style="margin:0">
+      <button class="btn primary" style="margin:0;flex:none;width:auto">Send</button>
+    </form>`);
+  const sh = document.getElementById('sheet'); sh.dataset.entry = id;
+  const inp = sh.querySelector('input[name=body]'); inp.value = keep;
+  sh.querySelector('.panel').scrollTop = sh.querySelector('.panel').scrollHeight;
 }
 
 function photoGrid(e) {
@@ -699,6 +784,10 @@ function profileSheet() {
       <input type="text" name="display_name" required maxlength="40" value="${esc(state.profile.display_name)}">
       <button class="btn primary">Save</button>
     </form>
+    <form data-form="changePw" class="pwbox">
+      <label class="lbl">Change password</label>
+      <div class="row"><input type="password" name="pw" minlength="6" required placeholder="New password (6+)" autocomplete="new-password" style="margin:0"><button class="btn" style="margin:0;flex:none;width:auto">Update</button></div>
+    </form>
     <button class="btn danger" data-act="logout" style="margin-top:14px">Log out</button>`);
 }
 
@@ -728,6 +817,44 @@ const acts = {
   'av-tab': (t) => { avTab = Number(t.dataset.i); avRefresh(); },
   'av-opt': (t) => { avDraft[t.dataset.key] = t.dataset.val; avRefresh(); },
 
+  'forgot': async (t) => {
+    const email = t.closest('form').querySelector('input[name=email]').value.trim();
+    if (!email) return toast('Type your email above first');
+    const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo: location.origin + '/' });
+    if (error) return fail(error);
+    toast('If that email has an account, a reset link is on its way.');
+  },
+  'imin': async (t) => {
+    const q = state.quests.find((x) => x.id === t.dataset.id);
+    if (!q) return;
+    const mine = q.quest_participants.some((p) => p.user_id === myId());
+    q.quest_participants = mine ? q.quest_participants.filter((p) => p.user_id !== myId()) : [...q.quest_participants, { user_id: myId() }];
+    const y = window.scrollY; render(); window.scrollTo(0, y);   // instant feel; the database catches up
+    const res = mine
+      ? await sb.from('quest_participants').delete().match({ quest_id: q.id, user_id: myId() })
+      : await sb.from('quest_participants').insert({ quest_id: q.id, user_id: myId() });
+    if (res.error) { fail(res.error); await reloadGroup(); }
+  },
+  'react': async (t) => {
+    const entry_id = t.dataset.entry, emoji = t.dataset.emoji;
+    const i = state.reactions.findIndex((r) => r.entry_id === entry_id && r.user_id === myId() && r.emoji === emoji);
+    if (i >= 0) state.reactions.splice(i, 1); else state.reactions.push({ entry_id, user_id: myId(), emoji });
+    const y = window.scrollY; render(); window.scrollTo(0, y);
+    if (document.getElementById('sheet')?.dataset.entry === entry_id) entrySheet(entry_id);
+    const res = i >= 0
+      ? await sb.from('entry_reactions').delete().match({ entry_id, user_id: myId(), emoji })
+      : await sb.from('entry_reactions').insert({ entry_id, user_id: myId(), emoji });
+    if (res.error) { fail(res.error); await reloadGroup(); }
+  },
+  'open-entry': (t) => entrySheet(t.dataset.id),
+  'del-comment': async (t) => {
+    const c = state.comments.find((x) => x.id === t.dataset.id);
+    if (!c) return;
+    const { error } = await sb.from('entry_comments').delete().eq('id', c.id);
+    if (error) return fail(error);
+    state.comments = state.comments.filter((x) => x.id !== c.id);
+    render(); entrySheet(c.entry_id);
+  },
   'filter': (t) => { state.filter = t.dataset.tag || null; render(); },
   'edit-crew': () => editCrewSheet(),
   'crew-emoji': (t) => {
@@ -866,6 +993,33 @@ const forms = {
     if (upd.error) throw upd.error;
     await setParticipants(qid, checkedWho(f));
     closeSheet(); state.tab = 'diary'; await reloadGroup(); toast('Saved to the diary 📖');
+  }),
+
+  newPassword: (f) => run(f, async () => {
+    const fd = new FormData(f);
+    if (fd.get('pw1') !== fd.get('pw2')) throw new Error("Those two passwords don't match");
+    const { data, error } = await sb.auth.updateUser({ password: fd.get('pw1') });
+    if (error) throw error;
+    history.replaceState({}, '', location.pathname);
+    toast('Password updated 🔑');
+    await afterLogin(data.user);
+  }),
+
+  changePw: (f) => run(f, async () => {
+    const { error } = await sb.auth.updateUser({ password: new FormData(f).get('pw') });
+    if (error) throw error;
+    f.reset(); toast('Password updated 🔑');
+  }),
+
+  comment: (f) => run(f, async () => {
+    const body = new FormData(f).get('body').trim();
+    if (!body) return;
+    const { data, error } = await sb.from('entry_comments').insert({ entry_id: f.dataset.id, author_id: myId(), body }).select().single();
+    if (error) throw error;
+    state.comments.push(data);
+    f.querySelector('input[name=body]').value = '';   // so the live re-draw doesn't put the sent text back
+    render(); entrySheet(f.dataset.id);
+    document.querySelector('#sheet input[name=body]')?.focus();
   }),
 
   editCrew: (f) => run(f, async () => {

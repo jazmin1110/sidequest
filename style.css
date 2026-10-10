@@ -272,3 +272,30 @@ i.done { background: #35b36b; }
 .filters button.on i { color: var(--accent-ink); opacity: .75; }
 .chip.tagchip { padding: 7px 13px; }
 .who.tags { gap: 7px; }
+
+/* ---------- quest card: I'm in ---------- */
+.card.quest { padding: 0; }
+.qmain { display: block; width: 100%; text-align: left; background: none; border: 0; padding: 14px 16px 6px; border-radius: var(--radius) var(--radius) 0 0; }
+.qmain:active { background: var(--accent-soft); }
+.qfoot { display: flex; align-items: center; gap: 8px; padding: 2px 16px 12px; }
+.qfoot .faces { margin: 0; flex: 1; min-width: 0; }
+.imin { margin-left: auto; flex: none; border: 1.5px solid var(--accent); background: transparent; color: var(--accent); font-weight: 800; font-size: 13px; padding: 6px 13px; border-radius: 99px; }
+.imin.on { background: var(--accent); color: var(--accent-ink); }
+
+/* ---------- diary: reactions + comments ---------- */
+.react-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 12px; }
+.react { border: 1.5px solid var(--line); background: var(--card); border-radius: 99px; padding: 4px 10px; font-size: 15px; line-height: 1.3; }
+.react i { font-style: normal; font-size: 12.5px; font-weight: 800; color: var(--muted); }
+.react.on { border-color: var(--accent); background: var(--accent-soft); }
+.react.on i { color: var(--accent); }
+.cbtn { margin-left: auto; border: 0; background: transparent; color: var(--accent); font-weight: 800; font-size: 13.5px; padding: 6px 4px; }
+.cprev { display: block; width: 100%; text-align: left; border: 0; background: var(--accent-soft); border-radius: 12px; padding: 8px 12px; margin-top: 8px; font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--ink); }
+.comments { margin-bottom: 12px; }
+.cmt { display: flex; gap: 10px; margin-bottom: 12px; align-items: flex-start; }
+.cmt .cbody { flex: 1; min-width: 0; }
+.cmt p { white-space: pre-wrap; word-break: break-word; margin-top: 1px; }
+.cmt .meta { display: inline; margin: 0 0 0 4px; font-size: 12px; }
+.cmt .x { border: 0; background: transparent; color: var(--muted); font-size: 12px; padding: 0 4px; float: right; }
+.cform { position: sticky; bottom: -22px; background: var(--bg); padding-top: 6px; }
+
+.pwbox { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); }
