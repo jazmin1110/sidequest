@@ -1,7 +1,7 @@
 // SideQuest — vanilla JS PWA. One file on purpose: easy to read, easy to tweak.
 // Flow: login -> pick/create/join a group -> Quests / Diary / Crew tabs.
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
-import { SUPABASE_URL, SUPABASE_ANON_KEY } from './config.js';
+import { SUPABASE_URL, SUPABASE_ANON_KEY, VAPID_PUBLIC_KEY } from './config.js';
 
 // A password-reset email link opens the app with #...type=recovery. Remember that before supabase-js clears the URL.
 const RECOVERY = /type=recovery/.test(location.hash + location.search);
@@ -16,6 +16,10 @@ const state = {
   filter: null,    // tag key the Quests tab is filtered to (null = all)
   comments: [], reactions: [],   // diary comments + emoji reactions for this crew
   cal: null,       // calendar month being viewed {y, m}; null = this month
+  xp: {},          // user id -> XP (from the get_xp database function)
+  archived: [],    // quests tucked away (hidden from lists + calendar)
+  diaryMode: 'feed', bookYear: null,   // diary: 'feed' or 'book' (memory book)
+  editingComment: null,                // id of the comment being edited
   photoUrls: {},   // storage path -> signed url
   chan: null,      // realtime channel
 };
@@ -39,7 +43,7 @@ const AV_OPTS = {
   mouth: ['smile', 'open', 'flat', 'cat'],
   blush: ['1', '0'],
   glasses: ['none', 'round', 'sunglasses'],
-  head: ['none', 'cap', 'beanie', 'bow', 'crown', 'headband'],
+  head: ['none', 'cap', 'beanie', 'bow', 'headband', 'catears', 'halo', 'flower', 'crown'],
   top: ['tee', 'hoodie', 'tank', 'jacket', 'dress'],
   bottom: ['pants', 'shorts', 'skirt'],
   shoes: ['sneakers', 'boots', 'sandals'],
@@ -78,7 +82,7 @@ const avDecode = (seed) => {
   }
   return cfg;
 };
-const avLabel = (v) => v === '1' ? 'On' : v === '0' ? 'Off' : v === 'none' ? 'None' : v.charAt(0).toUpperCase() + v.slice(1);
+const avLabel = (v) => v === '1' ? 'On' : v === '0' ? 'Off' : v === 'none' ? 'None' : v === 'catears' ? 'Cat ears' : v.charAt(0).toUpperCase() + v.slice(1);
 
 // Draw the character. mode 'full' = whole body on transparent; 'head' = square head crop with the backdrop colour (for small spots).
 function avatarSvg(cfg, mode = 'full') {
@@ -167,6 +171,10 @@ function avatarSvg(cfg, mode = 'full') {
   if (cfg.head === 'bow') L.push(`<path d="M67 19L54 10L54 28Z M67 19L80 10L80 28Z" fill="${A}" stroke="${A}" stroke-width="2" stroke-linejoin="round"/><circle cx="67" cy="19" r="3.8" fill="${A}"/><circle cx="67" cy="19" r="3.8" fill="#000" opacity=".15"/>`);
   if (cfg.head === 'crown') L.push(`<path d="M30 25L33 6L42 17L50 3L58 17L67 6L70 25Z" fill="${A}" stroke="${A}" stroke-width="2.4" stroke-linejoin="round"/><circle cx="50" cy="9" r="2" fill="#fff" opacity=".7"/>`);
   if (cfg.head === 'headband') L.push(`<path d="M25.5 33C29 13 71 13 74.5 33" fill="none" stroke="${A}" stroke-width="5.5" stroke-linecap="round"/>`);
+
+  if (cfg.head === 'catears') L.push(`<path d="M27 27L29 5L45 18Z M73 27L71 5L55 18Z" fill="${A}" stroke="${A}" stroke-width="2.4" stroke-linejoin="round"/><path d="M32 20L33 11L40 17Z M68 20L67 11L60 17Z" fill="#ff9bb3"/>`);
+  if (cfg.head === 'halo') L.push(`<ellipse cx="50" cy="8" rx="15" ry="4.2" fill="none" stroke="${A}" stroke-width="3.4"/><ellipse cx="50" cy="8" rx="15" ry="4.2" fill="none" stroke="#fff" stroke-opacity=".5" stroke-width="1"/>`);
+  if (cfg.head === 'flower') L.push([[31, 24], [40, 16], [50, 13], [60, 16], [69, 24]].map(([x, y]) => `<circle cx="${x}" cy="${y}" r="4.6" fill="${A}"/><circle cx="${x}" cy="${y}" r="1.7" fill="#fff7c2"/>`).join(''));
 
   const body = L.join('');
   if (mode === 'head') return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="14 4 72 72"><rect x="14" y="4" width="72" height="72" fill="#${cfg.bg}"/>${body}</svg>`;
@@ -257,6 +265,7 @@ async function afterLogin(user) {
   const { data: p, error } = await sb.from('profiles').select('*').eq('id', user.id).single();
   if (error) return fail(error);
   state.profile = p;
+  await loadXp([user.id]);
 
   const pending = localStorage.getItem('sq_join');
   if (pending) {
@@ -329,7 +338,8 @@ function showGroups() {
         <div class="stage" style="background:#${avDecode(state.profile.avatar_seed).bg}">${figure(state.profile.avatar_seed, 150)}</div>
         <div class="hero-txt">
           <div class="hi">Your character</div>
-          <p>Dress up your little adventurer. Your crew sees you like this.</p>
+          <div class="herolv">Lv ${levelOf(myXp())} · ${esc(levelName(levelOf(myXp())))}</div>
+          ${xpBar(myXp())}
           <button class="btn primary" data-act="profile" style="margin:8px 0 0">👕 Dress up</button>
         </div>
       </section>
@@ -367,7 +377,8 @@ async function loadGroupData() {
   const err = m.error || q.error || e.error;
   if (err) return fail(err);
   state.members = m.data.filter((r) => r.profiles).map((r) => ({ ...r.profiles, role: r.role }));
-  state.quests = q.data;
+  state.quests = q.data.filter((x) => !x.archived);
+  state.archived = q.data.filter((x) => x.archived);
   state.entries = e.data;
   // comments + reactions for those diary entries
   const ids = e.data.map((x) => x.id);
@@ -380,6 +391,7 @@ async function loadGroupData() {
     if (c.error || r.error) return fail(c.error || r.error);
     state.comments = c.data; state.reactions = r.data;
   }
+  await loadXp(state.members.map((m) => m.id));
   await signPhotos();
 }
 
@@ -472,15 +484,17 @@ function viewQuests() {
   const someday = open.filter((q) => !q.due_date);
   const done = filtered.filter((q) => q.status === 'done');
   const scene = state.members.length ? crewScene() : '';
-  if (!state.quests.length) return scene + `<div class="empty"><div class="big">🗺️</div><p>No quests yet.<br>Add the first thing you've all been saying "we should do someday".</p></div>`;
+  if (!state.quests.length) return scene + `<div class="empty"><div class="big">🗺️</div><p>No quests yet.<br>Add the first thing you've all been saying "we should do someday".</p><button class="btn primary" data-act="ideas" style="margin-top:12px">💡 Need ideas?</button></div>` + archivedSection();
   return `
     ${scene}
+    ${progressStrip()}
     ${filterBar()}
     ${!filtered.length ? `<div class="empty" style="padding:24px"><p>No quests with that tag yet.</p></div>` : ''}
     ${someday.length ? `<div class="nudge"><p><b>${someday.length}</b> quest${someday.length > 1 ? 's have' : ' has'} no date yet.</p><button data-act="spin">🎲 Pick one</button></div>` : ''}
     ${dated.length ? `<div class="section-title">Coming up</div>${dated.map(questCard).join('')}` : ''}
     ${someday.length ? `<div class="section-title">Someday</div>${someday.map(questCard).join('')}` : ''}
-    ${done.length ? `<div class="section-title">Done ✓</div>${done.map(questCard).join('')}` : ''}`;
+    ${done.length ? `<div class="section-title">Done ✓</div>${done.map(questCard).join('')}` : ''}
+    ${archivedSection()}`;
 }
 
 const REACTS = ['❤️', '😂', '🔥', '🥹', '👏'];
@@ -495,43 +509,27 @@ const reactBar = (e) => REACTS.map((em) => {
   return `<button class="react ${mine ? 'on' : ''}" data-act="react" data-entry="${e.id}" data-emoji="${em}">${em}${n ? ` <i>${n}</i>` : ''}</button>`;
 }).join('');
 
-function viewDiary() {
-  if (!state.entries.length) return `<div class="empty"><div class="big">📖</div><p>Your diary is empty.<br>Finish a quest and it lands here.</p></div>`;
-  return state.entries.map((e) => {
-    const q = state.quests.find((x) => x.id === e.quest_id);
-    const who = q ? q.quest_participants.map((p) => face(p.user_id, 26)).join('') : '';
-    const cs = state.comments.filter((c) => c.entry_id === e.id);
-    const last = cs[cs.length - 1];
-    return `
-      <article class="card entry">
-        <div class="head">${face(e.author_id, 34)}<div class="grow"><h3>${esc(q?.title || 'Quest')}</h3><div class="meta">${fmtDate(e.done_on)}${q?.location ? ` · 📍 ${esc(q.location)}` : ''}</div></div>${e.author_id === myId() ? `<button class="edit-btn" data-act="edit-entry" data-id="${e.id}" aria-label="Edit diary entry">✏️ Edit</button>` : ''}</div>
-        ${e.note ? `<p class="note">${esc(e.note)}</p>` : ''}
-        ${photoGrid(e)}
-        ${who ? `<div class="faces">${who}</div>` : ''}
-        <div class="react-row">${reactBar(e)}<button class="cbtn" data-act="open-entry" data-id="${e.id}">💬 ${cs.length || 'Comment'}</button></div>
-        ${last ? `<button class="cprev" data-act="open-entry" data-id="${e.id}"><b>${esc(nameOf(last.author_id))}</b> ${esc(last.body)}</button>` : ''}
-      </article>`;
-  }).join('');
-}
-
 // Comments sheet for one diary entry.
 function entrySheet(id) {
   const e = state.entries.find((x) => x.id === id);
   if (!e) return;
   const q = state.quests.find((x) => x.id === e.quest_id);
-  const keep = document.querySelector('#sheet input[name=body]')?.value || '';   // don't lose half-typed text on a live refresh
+  const keep = document.querySelector('#sheet form[data-form=comment] input[name=body]')?.value || '';   // don't lose half-typed text on a live refresh
   const cs = state.comments.filter((c) => c.entry_id === id);
   openSheet(`
     <h2>${esc(q?.title || 'Diary entry')}</h2>
     <div class="react-row" style="margin-bottom:10px">${reactBar(e)}</div>
     <div class="comments">${cs.length ? cs.map((c) => `
-      <div class="cmt">${face(c.author_id, 30)}<div class="cbody"><div><b>${esc(nameOf(c.author_id))}</b> <span class="meta">${ago(c.created_at)}</span>${c.author_id === myId() ? ` <button class="x" data-act="del-comment" data-id="${c.id}" aria-label="Delete comment">✕</button>` : ''}</div><p>${esc(c.body)}</p></div></div>`).join('') : `<p class="meta" style="margin:6px 0 12px">No comments yet. Say something nice (or roast them lovingly).</p>`}</div>
+      <div class="cmt">${face(c.author_id, 30)}<div class="cbody"><div><b>${esc(nameOf(c.author_id))}</b> <span class="meta">${ago(c.created_at)}${c.edited_at ? ' · edited' : ''}</span>${(c.author_id === myId() || isFounder()) ? ` <button class="x" data-act="del-comment" data-id="${c.id}" aria-label="Delete comment">✕</button>` : ''}${c.author_id === myId() ? ` <button class="x" data-act="edit-comment" data-id="${c.id}" aria-label="Edit comment">✎</button>` : ''}</div>
+        ${state.editingComment === c.id
+          ? `<form data-form="editComment" data-id="${c.id}" class="row cform"><input type="text" name="body" maxlength="500" required value="${esc(c.body)}" style="margin:0"><button class="btn primary" style="margin:0;flex:none;width:auto">Save</button><button type="button" class="btn" data-act="cancel-edit-comment" style="margin:0;flex:none;width:auto">✕</button></form>`
+          : `<p>${esc(c.body)}</p>`}</div></div>`).join('') : `<p class="meta" style="margin:6px 0 12px">No comments yet. Say something nice (or roast them lovingly).</p>`}</div>
     <form data-form="comment" data-id="${id}" class="row cform">
       <input type="text" name="body" maxlength="500" required placeholder="Add a comment…" autocomplete="off" style="margin:0">
       <button class="btn primary" style="margin:0;flex:none;width:auto">Send</button>
     </form>`);
   const sh = document.getElementById('sheet'); sh.dataset.entry = id;
-  const inp = sh.querySelector('input[name=body]'); inp.value = keep;
+  const inp = sh.querySelector('form[data-form=comment] input[name=body]'); inp.value = keep;
   sh.querySelector('.panel').scrollTop = sh.querySelector('.panel').scrollHeight;
 }
 
@@ -545,10 +543,9 @@ function viewCrew() {
   const rows = state.members.map((m) => `
     <div class="card person">
       ${figure(m.avatar_seed, 76)}
-      <div><div class="nm">${esc(m.display_name)}${m.id === myId() ? ' (you)' : ''}</div><div class="sub">${doneBy(m.id)} quest${doneBy(m.id) === 1 ? '' : 's'} done${m.role === 'admin' ? ' · founder' : ''}</div></div>
+      <div><div class="nm">${esc(m.display_name)}${m.id === myId() ? ' (you)' : ''}</div><div class="sub">${doneBy(m.id)} quest${doneBy(m.id) === 1 ? '' : 's'} done${m.role === 'admin' ? ' · founder' : ''}</div><div class="lvtag">Lv ${levelOf(state.xp[m.id])} · ${esc(levelName(levelOf(state.xp[m.id])))}</div></div>
     </div>`).join('');
   const g = state.group;
-  const isFounder = state.members.find((m) => m.id === myId())?.role === 'admin';
   const totalDone = state.quests.filter((q) => q.status === 'done').length;
   const card = `
     <div class="card crew-card">
@@ -559,9 +556,10 @@ function viewCrew() {
     </div>`;
   return `
     ${card}
+    ${statsCard()}
     <div class="section-title">The crew · ${state.members.length}</div>${rows}
     <button class="btn primary" data-act="share" style="margin-top:14px">Invite a friend</button>
-    ${isFounder ? `<button class="btn ghost" data-act="reset-invite" style="margin-top:6px">🔄 Make a new invite code</button>` : ''}
+    ${isFounder() ? `<button class="btn ghost" data-act="reset-invite" style="margin-top:6px">🔄 Make a new invite code</button>` : ''}
     <button class="btn danger" data-act="leave" style="margin-top:12px">Leave this crew</button>`;
 }
 
@@ -654,16 +652,16 @@ const checkedTags = (f) => {
 };
 const checkedWho = (f) => [...f.querySelectorAll('input[name=who]:checked')].map((i) => i.value);
 
-function newQuestSheet(date = '') {
+function newQuestSheet(date = '', preset = {}) {
   openSheet(`
     <h2>New quest</h2>
     <form data-form="newQuest">
-      <input type="text" name="title" required maxlength="120" placeholder="What are we doing? e.g. Sunrise hike">
+      <input type="text" name="title" required maxlength="120" placeholder="What are we doing? e.g. Sunrise hike" value="${esc(preset.title || '')}">
       <textarea name="details" maxlength="2000" placeholder="Details (optional)"></textarea>
       <input type="text" name="location" maxlength="120" placeholder="Where? (optional)">
       <label class="lbl">When? (leave empty for someday)</label>
       <input type="date" name="due_date" value="${esc(date)}">
-      ${tagPicker([])}
+      ${tagPicker(preset.tags || [])}
       <label class="lbl">Who's in?</label>
       ${whoIn([myId()])}
       <button class="btn primary">Add quest</button>
@@ -688,7 +686,8 @@ function questSheet(q) {
     </form>
     <button class="btn primary" data-act="complete" data-id="${q.id}">✅ We did it!</button>
     ${q.due_date ? `<button class="btn" data-act="ics" data-id="${q.id}">📅 Add to my phone calendar</button>` : ''}
-    ${q.created_by === myId() ? `<button class="btn danger" data-act="delete-quest" data-id="${q.id}">Delete quest</button>` : ''}`);
+    <button class="btn" data-act="archive-quest" data-id="${q.id}">📦 Archive (hide it, restore anytime)</button>
+    ${(q.created_by === myId() || isFounder()) ? `<button class="btn danger" data-act="delete-quest" data-id="${q.id}">Delete quest</button>` : ''}`);
 }
 
 function completeSheet(q) {
@@ -718,11 +717,21 @@ function doneSheet(q) {
     ${e?.note ? `<p class="note" style="white-space:pre-wrap;margin:10px 0">${esc(e.note)}</p>` : ''}
     ${e ? photoGrid(e) : ''}
     ${e && e.author_id === myId() ? `<button class="btn" data-act="edit-entry" data-id="${e.id}">✏️ Edit diary entry</button>` : ''}
-    ${q.created_by === myId() ? `<button class="btn danger" data-act="delete-quest" data-id="${q.id}">Delete quest & diary entry</button>` : ''}`);
+    ${e ? `<label class="cbtn addph" style="display:block;text-align:center;margin:8px 0">📷 Add photos<input type="file" accept="image/*" multiple hidden data-addphotos="${e.id}"></label>` : ''}
+    <details class="arch"><summary>✏️ Edit quest details</summary>
+      <form data-form="editDone" data-id="${q.id}" style="margin-top:10px">
+        <input type="text" name="title" required maxlength="120" value="${esc(q.title)}">
+        <textarea name="details" maxlength="2000" placeholder="Details">${esc(q.details || '')}</textarea>
+        <input type="text" name="location" maxlength="120" placeholder="Where?" value="${esc(q.location || '')}">
+        ${tagPicker(q.tags || [])}
+        <button class="btn">Save quest details</button>
+      </form>
+    </details>
+    ${(q.created_by === myId() || isFounder()) ? `<button class="btn danger" data-act="delete-quest" data-id="${q.id}">Delete quest & diary entry</button>` : ''}`);
 }
 
 // ---------- sheet: edit a diary entry (note, date, who, photos) ----------
-const MAX_PHOTOS = 6;
+const MAX_PHOTOS = 12;
 function editEntrySheet(id) {
   const e = state.entries.find((x) => x.id === id);
   if (!e) return;
@@ -773,13 +782,17 @@ function editCrewSheet() {
 // ---------- sheet: profile ----------
 let avDraft = null;  // avatar being edited (config object) while the profile sheet is open
 let avTab = 0;       // which editor tab is showing
+let avStart = null;  // avatar as it was when the editor opened (anything already worn stays selectable)
+const avOk = (key, v) => lockLevel(key, v) <= levelOf(myXp()) || avStart?.[key] === v;
 
 // The editor body (tabs + options). Re-rendered on every pick so the highlight and preview stay in sync.
 function avEditorHtml() {
   const [, rows] = AV_TABS[avTab];
   const body = rows.map(([key, label, kind]) => {
     const vals = kind === 'color' ? AV_COLORS[key] : AV_OPTS[key];
-    const btns = vals.map((v) => kind === 'color'
+    const btns = vals.map((v) => !avOk(key, v)
+      ? (kind === 'color' ? `<button type="button" class="sw locked" disabled style="background:#${v}" title="Level ${lockLevel(key, v)}">🔒</button>` : `<button type="button" class="opt locked" disabled>🔒 ${avLabel(v)} · Lv ${lockLevel(key, v)}</button>`)
+      : kind === 'color'
       ? `<button type="button" class="sw ${avDraft[key] === v ? 'on' : ''}" style="background:#${v}" data-act="av-opt" data-key="${key}" data-val="${v}" aria-label="${v}"></button>`
       : `<button type="button" class="opt ${avDraft[key] === v ? 'on' : ''}" data-act="av-opt" data-key="${key}" data-val="${v}">${avLabel(v)}</button>`).join('');
     return `<label class="lbl">${label}</label><div class="opts ${kind}">${btns}</div>`;
@@ -800,6 +813,7 @@ function profileSheet() {
   const seed = state.profile.avatar_seed;
   // Old random avatars start the editor from defaults; the user's picks become theirs on save.
   avDraft = avDecode(seed);   // old seeds become their stable random character
+  avStart = { ...avDraft };
   avTab = 0;
   openSheet(`
     <h2>Your profile</h2>
@@ -808,17 +822,273 @@ function profileSheet() {
         <div id="av-stage" class="stage big" style="background:#${avDraft.bg}"><img id="av-prev" class="fig" height="190" width="130" src="${avatarUrl(avEncode(avDraft), 'full')}" alt="Your character"></div>
         <button type="button" class="btn" data-act="shuffle" style="width:auto;margin:0">🎲 Surprise me</button>
       </div>
+      <div class="lvlcard"><b>Lv ${levelOf(myXp())} · ${esc(levelName(levelOf(myXp())))}</b>${xpBar(myXp())}${(() => { const n = nextUnlock(levelOf(myXp())); return n ? `<div class="xpmeta">Lv ${n.level} unlocks: ${esc(n.items.join(', '))}</div>` : ''; })()}<div class="xpmeta">Earn XP: +100 per finished quest, +30 per diary entry, +20 with photos.</div></div>
       <input type="hidden" name="avatar_seed" value="${esc(avEncode(avDraft))}">
       <div id="av-editor" class="av-editor">${avEditorHtml()}</div>
       <label class="lbl" style="margin-top:14px">Display name</label>
       <input type="text" name="display_name" required maxlength="40" value="${esc(state.profile.display_name)}">
       <button class="btn primary">Save</button>
     </form>
+    <div class="pwbox" id="push-box"></div>
     <form data-form="changePw" class="pwbox">
       <label class="lbl">Change password</label>
       <div class="row"><input type="password" name="pw" minlength="6" required placeholder="New password (6+)" autocomplete="new-password" style="margin:0"><button class="btn" style="margin:0;flex:none;width:auto">Update</button></div>
     </form>
     <button class="btn danger" data-act="logout" style="margin-top:14px">Log out</button>`);
+  refreshPushBox();
+}
+
+// ================= v3: levels, streaks, stats, ideas, memory book, reminders =================
+const isFounder = () => state.members.find((m) => m.id === myId())?.role === 'admin';
+
+// ---------- XP + levels ----------
+// XP is worked out in the database (get_xp): 100 per finished quest you were in, +30 per diary entry you wrote, +20 if it has photos.
+const levelOf = (xp) => Math.floor(Math.sqrt((xp || 0) / 100)) + 1;
+const xpAt = (lv) => 100 * (lv - 1) ** 2;                    // XP needed to reach a level
+const LEVEL_NAMES = ['Newbie', 'Wanderer', 'Explorer', 'Adventurer', 'Trailblazer', 'Pathfinder', 'Hero', 'Legend', 'Mythic', 'Ascended'];
+const levelName = (lv) => LEVEL_NAMES[Math.min(lv, LEVEL_NAMES.length) - 1];
+const myXp = () => state.xp[myId()] || 0;
+async function loadXp(ids) {
+  const { data, error } = await sb.rpc('get_xp', { uids: ids });
+  if (error) return console.error(error);
+  (data || []).forEach((r) => { state.xp[r.user_id] = r.xp; });
+}
+const xpBar = (xp) => {
+  const lv = levelOf(xp), lo = xpAt(lv), hi = xpAt(lv + 1);
+  return `<div class="xpbar"><i style="width:${Math.round(((xp - lo) / (hi - lo)) * 100)}%"></i></div><div class="xpmeta">${xp - lo} / ${hi - lo} XP to Lv ${lv + 1}</div>`;
+};
+// What level unlocks which avatar option. Anything not listed is free from the start.
+const LOCKS = {
+  hair: { bob: 2, curly: 3, bun: 4, ponytail: 5 },
+  eyes: { wink: 3, sparkle: 5 },
+  mouth: { cat: 4 },
+  glasses: { round: 2, sunglasses: 4 },
+  head: { cap: 2, beanie: 3, bow: 3, headband: 4, catears: 5, halo: 6, flower: 7, crown: 8 },
+  top: { tank: 2, jacket: 3, dress: 4 },
+  bottom: { skirt: 3 },
+  shoes: { sandals: 2, boots: 3 },
+  hairColor: { f48fb1: 3, '8e6cc6': 4, '4a90d9': 5, ffffff: 6 },
+  bg: { cfeff0: 2, fff6c9: 3, e6e6ee: 4 },
+};
+const lockLevel = (key, val) => LOCKS[key]?.[val] || 1;
+const unlockLabel = (k, v) => k === 'hairColor' ? 'a new hair color' : k === 'bg' ? 'a new backdrop' : k === 'hair' ? `${avLabel(v)} hair` : k === 'eyes' ? `${avLabel(v)} eyes` : k === 'mouth' ? `${avLabel(v)} mouth` : avLabel(v);
+const unlocksAt = (lv) => Object.entries(LOCKS).flatMap(([k, m]) => Object.entries(m).filter(([, l]) => l === lv).map(([v]) => unlockLabel(k, v)));
+function nextUnlock(lv) {
+  for (let l = lv + 1; l <= 12; l++) { const u = unlocksAt(l); if (u.length) return { level: l, items: u }; }
+  return null;
+}
+function levelUpSheet(lv) {
+  const items = unlocksAt(lv);
+  openSheet(`
+    <div class="lvlup"><div class="big">🎉</div><h2>Level ${lv} · ${levelName(lv)}!</h2>
+    ${items.length ? `<p>New in the dress-up room:</p><ul>${items.map((i) => `<li>${esc(i)}</li>`).join('')}</ul>` : '<p>Keep going, more outfits are coming.</p>'}
+    <button class="btn primary" data-act="profile">👕 Dress up now</button></div>`);
+}
+
+// ---------- crew streak (weeks in a row with at least one finished quest) ----------
+const weekIdx = (ymd) => {
+  const [y, m, d] = ymd.split('-').map(Number);
+  const days = Math.floor(Date.UTC(y, m - 1, d) / 86400000), dow = (new Date(Date.UTC(y, m - 1, d)).getUTCDay() + 6) % 7;   // weeks start Monday
+  return Math.floor((days - dow + 3) / 7);
+};
+function streakInfo() {
+  const t = today();
+  const set = new Set(state.entries.filter((e) => e.done_on && e.done_on <= t).map((e) => weekIdx(e.done_on)));
+  const thisW = weekIdx(t);
+  let cur = 0, w = set.has(thisW) ? thisW : thisW - 1;
+  while (set.has(w)) { cur++; w--; }
+  let best = 0, run = 0, prev = null;
+  for (const x of [...set].sort((a, b) => a - b)) { run = prev !== null && x === prev + 1 ? run + 1 : 1; best = Math.max(best, run); prev = x; }
+  return { cur, best, doneThisWeek: set.has(thisW) };
+}
+function progressStrip() {
+  const xp = myXp(), lv = levelOf(xp), s = streakInfo();
+  const msg = s.cur > 0 && s.doneThisWeek ? `🔥 ${s.cur}-week crew streak`
+    : s.cur > 0 ? `🔥 ${s.cur}-week streak at risk. Finish a quest by Sunday!`
+    : 'No streak yet. Finish a quest this week to start one.';
+  return `<div class="strip"><button class="lvlbtn" data-act="profile">Lv ${lv}<small>${esc(levelName(lv))}</small></button><div class="streak">${msg}</div><button class="pillbtn" data-act="ideas">💡 Ideas</button></div>`;
+}
+
+// ---------- stats ----------
+function statsCard() {
+  const done = state.quests.filter((q) => q.status === 'done');
+  const total = state.quests.length;
+  const pct = total ? Math.round(done.length / total * 100) : 0;
+  const year = String(new Date().getFullYear());
+  const yearN = state.entries.filter((e) => (e.done_on || '').startsWith(year)).length;
+  const photos = state.entries.reduce((n, e) => n + e.photo_paths.length, 0);
+  const places = new Set(done.map((q) => (q.location || '').trim().toLowerCase()).filter(Boolean)).size;
+  const tagCount = {}; done.forEach((q) => (q.tags || []).forEach((t) => { tagCount[t] = (tagCount[t] || 0) + 1; }));
+  const topTag = Object.entries(tagCount).sort((a, b) => b[1] - a[1])[0];
+  const att = state.members.map((m) => [m, done.filter((q) => q.quest_participants.some((p) => p.user_id === m.id)).length]).sort((a, b) => b[1] - a[1])[0];
+  const loved = state.entries.map((e) => [e, state.reactions.filter((r) => r.entry_id === e.id).length + state.comments.filter((c) => c.entry_id === e.id).length]).sort((a, b) => b[1] - a[1])[0];
+  const lovedQ = loved && loved[1] > 0 ? state.quests.find((q) => q.id === loved[0].quest_id) : null;
+  const s = streakInfo();
+  const tile = (ic, big, lb) => `<div class="stile"><span>${ic}</span><b>${big}</b><em>${lb}</em></div>`;
+  return `
+    <div class="card stats">
+      <h3>Crew stats</h3>
+      <div class="prog"><div class="bar"><i style="width:${pct}%"></i></div><span>${done.length} of ${total} quests done (${pct}%)</span></div>
+      <div class="sgrid">
+        ${tile('🔥', s.cur + 'w', 'current streak')}
+        ${tile('🏆', s.best + 'w', 'best streak')}
+        ${tile('📅', yearN, 'memories in ' + year)}
+        ${tile('📷', photos, 'photos')}
+        ${tile('📍', places, 'places')}
+        ${topTag ? tile(tagInfo(topTag[0])?.[1] || '✨', tagInfo(topTag[0])?.[2] || topTag[0], 'top vibe') : tile('✨', '–', 'top vibe')}
+      </div>
+      ${att && att[1] > 0 ? `<p class="mvp">⭐ Most quests: <b>${esc(att[0].display_name)}</b> (${att[1]})</p>` : ''}
+      ${lovedQ ? `<p class="mvp">💖 Most loved memory: <b>${esc(lovedQ.title)}</b></p>` : ''}
+    </div>`;
+}
+
+// ---------- quest ideas ----------
+const IDEA_LIST = {
+  sports: ['Play badminton or pickleball', 'Bowling night', 'Rent bikes and ride around a park', 'Try wall climbing', 'Futsal game vs another barkada', 'Go swimming at a resort', 'Skate or rollerblade day', 'Join a fun run together'],
+  arts: ['Paint and sip night', 'Make pottery', 'Craft a scrapbook of our year', 'Try candle or soap making', 'Do a tote bag painting session', 'Sketch strangers at a cafe', 'DIY photo booth day', 'Make friendship bracelets'],
+  out: ['Karaoke night', 'Watch a live gig', 'Night market crawl', 'Movie marathon in a cinema', 'Rooftop bar sunset', 'Thrift shopping day', 'Go to a concert together', 'Try an escape room'],
+  nature: ['Sunrise hike', 'Beach day with a picnic', 'Visit a waterfall', 'Camp overnight', 'Stargazing trip', 'Plant trees together', 'Kayak or paddle board', 'Visit a farm or flower garden'],
+  food: ['Try a new restaurant every week', 'Street food crawl', 'Cook a full meal together', 'Bake something ridiculous', 'Boodle fight night', 'Dessert crawl', 'Find the best halo-halo', 'Potluck with a theme'],
+  travel: ['Weekend road trip', 'Visit a province none of us has been to', 'Island hopping', 'Day trip by train', 'Staycation at a hotel', 'Visit a heritage town', 'Take a ferry somewhere new', 'Plan a trip abroad together'],
+  games: ['Board game night', 'Arcade run', 'Video game tournament', 'Mahjong or card night', 'Mini golf', 'Trivia night at a bar', 'Charades marathon', 'Build a huge jigsaw puzzle'],
+  music: ['Make a group playlist', 'Learn a song together', 'Jam session with whatever instruments we have', 'Go to an open mic', 'Dance class together', 'Record a silly music video', 'Vinyl shop visit', 'Rewatch a musical'],
+  learn: ['Take a one-day workshop', 'Visit a museum', 'Learn a few phrases of a new language', 'Book club meetup', 'Visit a library or bookstore', 'Attend a free talk', 'Try a coding or crafts class', 'Teach each other one skill'],
+  wellness: ['Yoga in the park', 'Spa day', 'Digital detox afternoon', 'Morning walk and coffee', 'Meditation session', 'Cold drink and journaling date', 'Sleep early challenge', 'Try a new healthy recipe'],
+  chill: ['Pajama party', 'Movie night at home', 'Cafe hop and do nothing', 'Picnic at the park', 'Bake and binge a series', 'Spa night with face masks', 'Backyard bonfire', 'Photo dump night: look through old pics'],
+  other: ['Volunteer for a day', 'Throw a surprise party for someone', 'Make a time capsule', 'Group photoshoot', 'Secret Santa or gift swap', 'Visit a pet cafe', 'Random act of kindness day', 'Do something none of us have tried'],
+};
+const IDEAS = Object.entries(IDEA_LIST).flatMap(([tag, list]) => list.map((title) => [tag, title]));
+let ideaTag = null, ideaShown = [];
+function ideasSheet() {
+  const have = new Set(state.quests.concat(state.archived).map((q) => q.title.trim().toLowerCase()));
+  const pool = IDEAS.filter(([tag, title]) => (!ideaTag || tag === ideaTag) && !have.has(title.toLowerCase()));
+  ideaShown = [...pool].sort(() => Math.random() - 0.5).slice(0, 5);
+  openSheet(`
+    <h2>💡 Quest ideas</h2>
+    <div class="filters sheetfilters">
+      <button class="${!ideaTag ? 'on' : ''}" data-act="idea-tag" data-tag="">All</button>
+      ${TAGS.map(([k, ic, lb]) => `<button class="${ideaTag === k ? 'on' : ''}" data-act="idea-tag" data-tag="${k}">${ic} ${lb}</button>`).join('')}
+    </div>
+    ${ideaShown.length ? ideaShown.map(([tag, title], i) => `
+      <div class="idea"><div class="grow"><b>${esc(title)}</b><div class="pills">${tagPills([tag])}</div></div><button class="btn primary" data-act="idea-add" data-i="${i}" style="width:auto;margin:0">＋ Add</button></div>`).join('')
+      : '<p class="meta" style="margin:8px 0">You already have every idea in this category. Respect.</p>'}
+    <button class="btn" data-act="idea-more" style="margin-top:10px">🎲 Show me others</button>`);
+}
+
+// ---------- archived quests ----------
+function archivedSection() {
+  if (!state.archived.length) return '';
+  return `<details class="arch"><summary>📦 Archived (${state.archived.length})</summary>
+    ${state.archived.map((q) => `<div class="card quest"><div class="qmain"><div class="qt">${esc(q.title)}</div></div>
+      <div class="qfoot"><button class="imin" data-act="restore-quest" data-id="${q.id}">↩ Restore</button>${(q.created_by === myId() || isFounder()) ? `<button class="imin" data-act="delete-quest" data-id="${q.id}">🗑 Delete</button>` : ''}</div></div>`).join('')}
+  </details>`;
+}
+
+// ---------- diary: feed + memory book ----------
+function viewDiary() {
+  const toggle = `<div class="seg"><button class="${state.diaryMode === 'feed' ? 'on' : ''}" data-act="diary-mode" data-mode="feed">Feed</button><button class="${state.diaryMode === 'book' ? 'on' : ''}" data-act="diary-mode" data-mode="book">Memory book</button></div>`;
+  if (!state.entries.length) return `<div class="empty"><div class="big">📖</div><p>Your diary is empty.<br>Finish a quest and it lands here.</p></div>`;
+  return toggle + (state.diaryMode === 'book' ? viewBook() : viewFeed());
+}
+
+const addPhotosBtn = (e) => `<label class="cbtn addph">📷 Add photos<input type="file" accept="image/*" multiple hidden data-addphotos="${e.id}"></label>`;
+
+function viewFeed() {
+  return state.entries.map((e) => {
+    const q = state.quests.find((x) => x.id === e.quest_id);
+    const who = q ? q.quest_participants.map((p) => face(p.user_id, 26)).join('') : '';
+    const cs = state.comments.filter((c) => c.entry_id === e.id);
+    const last = cs[cs.length - 1];
+    return `
+      <article class="card entry">
+        <div class="head">${face(e.author_id, 34)}<div class="grow"><h3>${esc(q?.title || 'Quest')}</h3><div class="meta">${fmtDate(e.done_on)}${q?.location ? ` · 📍 ${esc(q.location)}` : ''}</div></div>${e.author_id === myId() ? `<button class="edit-btn" data-act="edit-entry" data-id="${e.id}" aria-label="Edit diary entry">✏️ Edit</button>` : ''}</div>
+        ${e.note ? `<p class="note">${esc(e.note)}</p>` : ''}
+        ${photoGrid(e)}
+        ${who ? `<div class="faces">${who}</div>` : ''}
+        <div class="react-row">${reactBar(e)}<button class="cbtn" data-act="open-entry" data-id="${e.id}">💬 ${cs.length || 'Comment'}</button>${addPhotosBtn(e)}</div>
+        ${last ? `<button class="cprev" data-act="open-entry" data-id="${e.id}"><b>${esc(nameOf(last.author_id))}</b> ${esc(last.body)}</button>` : ''}
+      </article>`;
+  }).join('');
+}
+
+function viewBook() {
+  const years = [...new Set(state.entries.map((e) => (e.done_on || '').slice(0, 4)).filter(Boolean))].sort().reverse();
+  const yr = years.includes(state.bookYear) ? state.bookYear : years[0];
+  const list = state.entries.filter((e) => (e.done_on || '').startsWith(yr)).sort((a, b) => b.done_on.localeCompare(a.done_on));
+  const photos = list.reduce((n, e) => n + e.photo_paths.length, 0);
+  const qs = list.map((e) => state.quests.find((q) => q.id === e.quest_id)).filter(Boolean);
+  const places = new Set(qs.map((q) => (q.location || '').trim().toLowerCase()).filter(Boolean)).size;
+  const byMonth = {};
+  list.forEach((e) => { (byMonth[e.done_on.slice(0, 7)] ||= []).push(e); });
+  const months = Object.keys(byMonth).sort().reverse().map((k) => {
+    const [y, m] = k.split('-').map(Number);
+    return `<div class="section-title">${MONTHS[m - 1]} ${y} · ${byMonth[k].length}</div>` + byMonth[k].map((e) => {
+      const q = state.quests.find((x) => x.id === e.quest_id);
+      const thumbs = e.photo_paths.slice(0, 3).map((p) => state.photoUrls[p]).filter(Boolean).map((u) => `<img src="${u}" alt="" loading="lazy">`).join('');
+      return `<button class="card bk" data-act="open-entry" data-id="${e.id}">
+        <div class="bkth ${thumbs ? '' : 'none'}">${thumbs || '📖'}</div>
+        <div class="bkt"><b>${esc(q?.title || 'Quest')}</b><span>${fmtDate(e.done_on)}${q?.location ? ` · 📍 ${esc(q.location)}` : ''}</span>${e.note ? `<p>${esc(e.note)}</p>` : ''}</div></button>`;
+    }).join('');
+  }).join('');
+  return `
+    ${years.length > 1 ? `<div class="filters">${years.map((y) => `<button class="${y === yr ? 'on' : ''}" data-act="book-year" data-year="${y}">${y}</button>`).join('')}</div>` : ''}
+    <div class="card recap"><h3>${yr} so far</h3>
+      <div class="crew-stats"><div><b>${list.length}</b><span>memories</span></div><div><b>${photos}</b><span>photos</span></div><div><b>${places}</b><span>places</span></div></div></div>
+    ${months}`;
+}
+
+async function addPhotosToEntry(entryId, files) {
+  const e = state.entries.find((x) => x.id === entryId);
+  if (!e || !files.length) return;
+  if (e.photo_paths.length + files.length > 12) return toast(`Max 12 photos per entry (it has ${e.photo_paths.length})`);
+  toast('Uploading…');
+  const gid = state.group.id, added = [];
+  try {
+    for (const file of files) {
+      const blob = await compress(file);
+      const path = `${gid}/${e.quest_id || 'misc'}/${crypto.randomUUID()}.jpg`;
+      const { error } = await sb.storage.from('photos').upload(path, blob, { contentType: 'image/jpeg' });
+      if (error) throw error;
+      added.push(path);
+    }
+    const { error } = await sb.rpc('add_entry_photos', { eid: e.id, paths: added });
+    if (error) throw error;
+  } catch (err) {
+    if (added.length) await sb.storage.from('photos').remove(added);
+    throw err;
+  }
+  await reloadGroup(); toast('Photos added 📷');
+}
+document.addEventListener('change', (ev) => {
+  const inp = ev.target.closest?.('input[data-addphotos]');
+  if (!inp) return;
+  const files = [...inp.files]; inp.value = '';
+  addPhotosToEntry(inp.dataset.addphotos, files).catch(fail);
+});
+
+// ---------- push reminders ----------
+const b64ToU8 = (s) => { const p = '='.repeat((4 - s.length % 4) % 4), raw = atob((s + p).replace(/-/g, '+').replace(/_/g, '/')); return Uint8Array.from([...raw].map((c) => c.charCodeAt(0))); };
+async function pushStatus() {
+  const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  const standalone = navigator.standalone || matchMedia('(display-mode: standalone)').matches;
+  if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) return ios && !standalone ? 'ios-install' : 'unsupported';
+  if (Notification.permission === 'denied') return 'denied';
+  const reg = await navigator.serviceWorker.ready;
+  return (await reg.pushManager.getSubscription()) ? 'on' : 'off';
+}
+async function refreshPushBox() {
+  const box = document.getElementById('push-box');
+  if (!box) return;
+  const st = await pushStatus().catch(() => 'unsupported');
+  const txt = {
+    'ios-install': 'On iPhone, add SideQuest to your Home Screen first (Share button → Add to Home Screen), open it from there, then turn this on.',
+    unsupported: "This browser can't do reminders.",
+    denied: 'Notifications are blocked. Allow them for SideQuest in your phone settings.',
+    on: "On. You'll get a nudge the day before and the morning of a planned quest, plus a Thursday nudge if your crew has nothing planned.",
+    off: "Get a nudge the day before and the morning of a planned quest, plus a Thursday nudge if your crew has nothing planned.",
+  }[st];
+  box.innerHTML = `<label class="lbl">🔔 Reminders</label><p class="meta" style="margin-bottom:8px">${txt}</p>
+    ${st === 'on' || st === 'off' ? `<button type="button" class="btn ${st === 'off' ? 'primary' : ''}" data-act="push-toggle">${st === 'on' ? 'Turn off reminders' : 'Turn on reminders'}</button>` : ''}`;
 }
 
 // ---------- click + submit routing ----------
@@ -843,7 +1113,7 @@ const acts = {
     } catch { /* user cancelled share */ }
   },
   'profile': () => profileSheet(),
-  'shuffle': () => { avDraft = avRandom(); avRefresh(); },
+  'shuffle': () => { avDraft = avRandom(); for (const k of Object.keys(avDraft)) if (!avOk(k, avDraft[k])) avDraft[k] = AV_DEFAULT[k]; avRefresh(); },
   'av-tab': (t) => { avTab = Number(t.dataset.i); avRefresh(); },
   'av-opt': (t) => { avDraft[t.dataset.key] = t.dataset.val; avRefresh(); },
 
@@ -877,6 +1147,41 @@ const acts = {
     if (res.error) { fail(res.error); await reloadGroup(); }
   },
   'edit-entry': (t) => editEntrySheet(t.dataset.id),
+  'edit-comment': (t) => { state.editingComment = t.dataset.id; const c = state.comments.find((x) => x.id === t.dataset.id); if (c) entrySheet(c.entry_id); },
+  'cancel-edit-comment': (t) => { const id = document.getElementById('sheet')?.dataset.entry; state.editingComment = null; if (id) entrySheet(id); },
+  'diary-mode': (t) => { state.diaryMode = t.dataset.mode; render(); window.scrollTo(0, 0); },
+  'book-year': (t) => { state.bookYear = t.dataset.year; render(); },
+  'ideas': () => ideasSheet(),
+  'idea-tag': (t) => { ideaTag = t.dataset.tag || null; ideasSheet(); },
+  'idea-more': () => ideasSheet(),
+  'idea-add': (t) => { const [tag, title] = ideaShown[Number(t.dataset.i)] || []; if (title) newQuestSheet('', { title, tags: [tag] }); },
+  'archive-quest': async (t) => {
+    const { error } = await sb.from('quests').update({ archived: true }).eq('id', t.dataset.id);
+    if (error) return fail(error);
+    closeSheet(); await reloadGroup(); toast('Archived 📦');
+  },
+  'restore-quest': async (t) => {
+    const { error } = await sb.from('quests').update({ archived: false }).eq('id', t.dataset.id);
+    if (error) return fail(error);
+    await reloadGroup(); toast('Restored');
+  },
+  'push-toggle': async () => {
+    const st = await pushStatus();
+    const reg = await navigator.serviceWorker.ready;
+    if (st === 'on') {
+      const sub = await reg.pushManager.getSubscription();
+      if (sub) { await sb.from('push_subscriptions').delete().eq('endpoint', sub.endpoint); await sub.unsubscribe(); }
+      toast('Reminders off');
+    } else {
+      if ((await Notification.requestPermission()) !== 'granted') { refreshPushBox(); return toast('Notifications are blocked. Allow them in your phone settings.'); }
+      const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToU8(VAPID_PUBLIC_KEY) });
+      const j = sub.toJSON();
+      const { error } = await sb.rpc('save_push', { ep: j.endpoint, p: j.keys.p256dh, a: j.keys.auth });
+      if (error) { await sub.unsubscribe(); throw error; }
+      reg.showNotification('Reminders are on 🔔', { body: "We'll nudge you about upcoming quests.", icon: 'icons/icon-192.png' });
+    }
+    refreshPushBox();
+  },
   'open-entry': (t) => entrySheet(t.dataset.id),
   'del-comment': async (t) => {
     const c = state.comments.find((x) => x.id === t.dataset.id);
@@ -919,7 +1224,8 @@ const acts = {
   },
   'delete-quest': async (t) => {
     if (!confirm('Delete this quest for everyone? This also removes its diary entry and photos.')) return;
-    const q = state.quests.find((x) => x.id === t.dataset.id);
+    const q = state.quests.concat(state.archived).find((x) => x.id === t.dataset.id);
+    if (!q) return;
     const paths = state.entries.filter((e) => e.quest_id === q.id).flatMap((e) => e.photo_paths);
     const { error } = await sb.from('quests').delete().eq('id', q.id);
     if (error) return fail(error);
@@ -1006,6 +1312,7 @@ const forms = {
 
   complete: (f) => run(f, async () => {
     const fd = new FormData(f), qid = f.dataset.id, gid = state.group.id;
+    const lvBefore = levelOf(myXp());
     const files = [...f.querySelector('input[type=file]').files].slice(0, 6);
     const paths = [];
     for (const file of files) {
@@ -1023,7 +1330,9 @@ const forms = {
     const upd = await sb.from('quests').update({ status: 'done', done_at: new Date().toISOString() }).eq('id', qid);
     if (upd.error) throw upd.error;
     await setParticipants(qid, checkedWho(f));
-    closeSheet(); state.tab = 'diary'; await reloadGroup(); toast('Saved to the diary 📖');
+    closeSheet(); state.tab = 'diary'; await reloadGroup();
+    const after = levelOf(myXp());
+    if (after > lvBefore) levelUpSheet(after); else toast('Saved to the diary 📖 +XP');
   }),
 
   editEntry: (f) => run(f, async () => {
@@ -1081,6 +1390,26 @@ const forms = {
     f.querySelector('input[name=body]').value = '';   // so the live re-draw doesn't put the sent text back
     render(); entrySheet(f.dataset.id);
     document.querySelector('#sheet input[name=body]')?.focus();
+  }),
+
+  editComment: (f) => run(f, async () => {
+    const body = new FormData(f).get('body').trim();
+    const c = state.comments.find((x) => x.id === f.dataset.id);
+    if (!body || !c) return;
+    const edited_at = new Date().toISOString();
+    const { error } = await sb.from('entry_comments').update({ body, edited_at }).eq('id', c.id);
+    if (error) throw error;
+    Object.assign(c, { body, edited_at });
+    state.editingComment = null; render(); entrySheet(c.entry_id);
+  }),
+
+  editDone: (f) => run(f, async () => {
+    const fd = new FormData(f);
+    const { error } = await sb.from('quests').update({
+      title: fd.get('title').trim(), details: fd.get('details').trim() || null, location: fd.get('location').trim() || null, tags: checkedTags(f),
+    }).eq('id', f.dataset.id);
+    if (error) throw error;
+    closeSheet(); await reloadGroup(); toast('Saved');
   }),
 
   editCrew: (f) => run(f, async () => {
