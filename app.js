@@ -504,7 +504,7 @@ function viewDiary() {
     const last = cs[cs.length - 1];
     return `
       <article class="card entry">
-        <div class="head">${face(e.author_id, 34)}<div><h3>${esc(q?.title || 'Quest')}</h3><div class="meta">${fmtDate(e.done_on)}${q?.location ? ` · 📍 ${esc(q.location)}` : ''}</div></div></div>
+        <div class="head">${face(e.author_id, 34)}<div class="grow"><h3>${esc(q?.title || 'Quest')}</h3><div class="meta">${fmtDate(e.done_on)}${q?.location ? ` · 📍 ${esc(q.location)}` : ''}</div></div>${e.author_id === myId() ? `<button class="edit-btn" data-act="edit-entry" data-id="${e.id}" aria-label="Edit diary entry">✏️ Edit</button>` : ''}</div>
         ${e.note ? `<p class="note">${esc(e.note)}</p>` : ''}
         ${photoGrid(e)}
         ${who ? `<div class="faces">${who}</div>` : ''}
@@ -717,7 +717,37 @@ function doneSheet(q) {
     ${q.quest_participants.length ? `<div class="faces" style="margin:12px 0">${q.quest_participants.map((p) => face(p.user_id, 30)).join('')}</div>` : ''}
     ${e?.note ? `<p class="note" style="white-space:pre-wrap;margin:10px 0">${esc(e.note)}</p>` : ''}
     ${e ? photoGrid(e) : ''}
+    ${e && e.author_id === myId() ? `<button class="btn" data-act="edit-entry" data-id="${e.id}">✏️ Edit diary entry</button>` : ''}
     ${q.created_by === myId() ? `<button class="btn danger" data-act="delete-quest" data-id="${q.id}">Delete quest & diary entry</button>` : ''}`);
+}
+
+// ---------- sheet: edit a diary entry (note, date, who, photos) ----------
+const MAX_PHOTOS = 6;
+function editEntrySheet(id) {
+  const e = state.entries.find((x) => x.id === id);
+  if (!e) return;
+  if (e.author_id !== myId()) return toast('Only the person who wrote it can edit it');
+  const q = state.quests.find((x) => x.id === e.quest_id);
+  const ids = q ? q.quest_participants.map((p) => p.user_id) : [];
+  const photos = e.photo_paths.map((p) => `
+    <label class="ph"><input type="checkbox" name="rm" value="${esc(p)}">
+      ${state.photoUrls[p] ? `<img src="${state.photoUrls[p]}" alt="">` : '<span class="noimg">📷</span>'}<b>✕</b><em>Will be removed</em>
+    </label>`).join('');
+  openSheet(`
+    <h2>Edit diary entry</h2>
+    <p class="meta" style="margin-bottom:12px">${esc(q?.title || '')}</p>
+    <form data-form="editEntry" data-id="${e.id}">
+      <label class="lbl">What happened?</label>
+      <textarea name="note" maxlength="4000" placeholder="The funny bits, the food, the plot twists…">${esc(e.note || '')}</textarea>
+      ${e.photo_paths.length ? `<label class="lbl">Photos (tap one to remove it)</label><div class="editphotos">${photos}</div>` : ''}
+      <label class="lbl">Add photos (up to ${MAX_PHOTOS} in total)</label>
+      <input type="file" name="photos" accept="image/*" multiple style="margin-bottom:10px">
+      <label class="lbl">When was it?</label>
+      <input type="date" name="done_on" required value="${esc(e.done_on)}">
+      <label class="lbl">Who was there?</label>
+      ${whoIn(ids.length ? ids : [myId()])}
+      <button class="btn primary">Save changes</button>
+    </form>`);
 }
 
 // ---------- sheet: edit crew ----------
@@ -846,6 +876,7 @@ const acts = {
       : await sb.from('entry_reactions').insert({ entry_id, user_id: myId(), emoji });
     if (res.error) { fail(res.error); await reloadGroup(); }
   },
+  'edit-entry': (t) => editEntrySheet(t.dataset.id),
   'open-entry': (t) => entrySheet(t.dataset.id),
   'del-comment': async (t) => {
     const c = state.comments.find((x) => x.id === t.dataset.id);
@@ -993,6 +1024,36 @@ const forms = {
     if (upd.error) throw upd.error;
     await setParticipants(qid, checkedWho(f));
     closeSheet(); state.tab = 'diary'; await reloadGroup(); toast('Saved to the diary 📖');
+  }),
+
+  editEntry: (f) => run(f, async () => {
+    const e = state.entries.find((x) => x.id === f.dataset.id);
+    if (!e) return;
+    const gid = state.group.id, fd = new FormData(f);
+    const removed = [...f.querySelectorAll('input[name=rm]:checked')].map((i) => i.value);
+    const kept = e.photo_paths.filter((p) => !removed.includes(p));
+    const files = [...f.querySelector('input[type=file]').files];
+    if (kept.length + files.length > MAX_PHOTOS) throw new Error(`Max ${MAX_PHOTOS} photos. You'd have ${kept.length + files.length}.`);
+    const added = [];
+    try {
+      for (const file of files) {
+        const blob = await compress(file);
+        const path = `${gid}/${e.quest_id}/${crypto.randomUUID()}.jpg`;
+        const { error } = await sb.storage.from('photos').upload(path, blob, { contentType: 'image/jpeg' });
+        if (error) throw error;
+        added.push(path);
+      }
+      const { error } = await sb.from('entries').update({
+        note: fd.get('note').trim() || null, done_on: fd.get('done_on'), photo_paths: [...kept, ...added],
+      }).eq('id', e.id);
+      if (error) throw error;
+    } catch (err) {
+      if (added.length) await sb.storage.from('photos').remove(added);   // don't leave orphaned uploads behind
+      throw err;
+    }
+    if (removed.length) await sb.storage.from('photos').remove(removed);  // only after the entry saved OK
+    if (e.quest_id) await setParticipants(e.quest_id, checkedWho(f));
+    closeSheet(); await reloadGroup(); toast('Diary updated ✏️');
   }),
 
   newPassword: (f) => run(f, async () => {
