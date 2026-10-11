@@ -586,7 +586,14 @@ const ago = (iso) => {
   return m < 1 ? 'now' : m < 60 ? m + 'm' : m < 1440 ? Math.round(m / 60) + 'h' : Math.round(m / 1440) + 'd';
 };
 const nameOf = (id) => memberById(id)?.display_name || 'Someone';
-const reactBar = (e) => REACTS.map((em) => {
+// Feed shows only reactions that have votes (or are yours) + a ☺＋ to open the rest; the comments sheet shows all five.
+const reactBarCompact = (e) => {
+  if (state.reactOpen === e.id) return reactBar(e);
+  const used = REACTS.filter((em) => state.reactions.some((r) => r.entry_id === e.id && r.emoji === em));
+  const html = REACTS.map((em, i) => used.includes(em) ? reactBar(e, [em]) : '').join('');
+  return html + `<button class="react more" data-act="react-more" data-entry="${e.id}" aria-label="Add a reaction">☺＋</button>`;
+};
+const reactBar = (e, only) => (only || REACTS).map((em) => {
   const n = state.reactions.filter((r) => r.entry_id === e.id && r.emoji === em).length;
   const mine = state.reactions.some((r) => r.entry_id === e.id && r.emoji === em && r.user_id === myId());
   return `<button class="react ${mine ? 'on' : ''}" data-act="react" data-entry="${e.id}" data-emoji="${em}">${em}${n ? ` <i>${n}</i>` : ''}</button>`;
@@ -680,8 +687,7 @@ function viewCrew() {
     ${card}
     ${statsCard()}
     <div class="section-title">The crew · ${state.members.length}</div>${rows}
-    <button class="btn primary" data-act="share" style="margin-top:14px">Invite a friend</button>
-    ${isFounder() ? `<button class="btn ghost" data-act="reset-invite" style="margin-top:6px">🔄 Make a new invite code</button>` : ''}
+    ${isFounder() ? `<button class="btn ghost" data-act="reset-invite" style="margin-top:14px">🔄 Make a new invite code</button>` : ''}
     <button class="btn danger" data-act="leave" style="margin-top:12px">Leave this crew</button>`;
 }
 
@@ -949,7 +955,7 @@ function avEditorHtml() {
   const body = rows.map(([key, label, kind]) => {
     const vals = kind === 'color' ? AV_COLORS[key] : AV_OPTS[key];
     const btns = vals.map((v) => !avOk(key, v)
-      ? (kind === 'color' ? `<button type="button" class="sw locked" disabled style="background:#${v}" title="Level ${lockLevel(key, v)}">🔒</button>` : `<button type="button" class="opt locked" disabled>🔒 ${avLabel(v)} · Lv ${lockLevel(key, v)}</button>`)
+      ? (kind === 'color' ? `<button type="button" class="sw locked" data-act="av-locked" data-need="${lockLevel(key, v)}" style="background:#${v}" aria-label="Locked until level ${lockLevel(key, v)}">🔒</button>` : `<button type="button" class="opt locked" data-act="av-locked" data-need="${lockLevel(key, v)}">🔒 ${avLabel(v)} · Lv ${lockLevel(key, v)}</button>`)
       : kind === 'color'
       ? `<button type="button" class="sw ${avDraft[key] === v ? 'on' : ''}" style="background:#${v}" data-act="av-opt" data-key="${key}" data-val="${v}" aria-label="${v}"></button>`
       : `<button type="button" class="opt ${avDraft[key] === v ? 'on' : ''}" data-act="av-opt" data-key="${key}" data-val="${v}">${avLabel(v)}</button>`).join('');
@@ -980,7 +986,7 @@ function profileSheet() {
         <div id="av-stage" class="stage big" style="background:#${avDraft.bg}"><img id="av-prev" class="fig" height="140" width="96" src="${avatarUrl(avEncode(avDraft), 'full')}" alt="Your character"></div>
         <button type="button" class="btn" data-act="shuffle" style="width:auto;margin:0">🎲 Surprise me</button>
       </div>
-      <div class="lvlcard"><b>Lv ${levelOf(myXp())} · ${esc(levelName(levelOf(myXp())))}</b>${xpBar(myXp())}${(() => { const n = nextUnlock(levelOf(myXp())); return n ? `<div class="xpmeta">Lv ${n.level} unlocks: ${esc(n.items.join(', '))}</div>` : ''; })()}<div class="xpmeta">Earn XP: +100 per finished quest, +30 per diary entry, +20 with photos.</div></div>
+      <div class="lvlcard"><b>Lv ${levelOf(myXp())} · ${esc(levelName(levelOf(myXp())))}</b>${xpBar(myXp())}<details class="xpmore"><summary>What unlocks next?</summary>${(() => { const n = nextUnlock(levelOf(myXp())); return n ? `<div class="xpmeta">Lv ${n.level} unlocks: ${esc(n.items.join(', '))}</div>` : '<div class="xpmeta">Everything is unlocked. Legend.</div>'; })()}<div class="xpmeta">Earn XP: +100 per finished quest, +30 per diary entry, +20 with photos.</div></details></div>
       <input type="hidden" name="avatar_seed" value="${esc(avEncode(avDraft))}">
       <div id="av-editor" class="av-editor">${avEditorHtml()}</div>
       <label class="lbl" style="margin-top:14px">Display name</label>
@@ -1086,11 +1092,10 @@ function statsCard() {
   return `
     <div class="card stats">
       <h3>Crew stats</h3>
-      <div class="prog"><div class="bar"><i style="width:${pct}%"></i></div><span>${done.length} of ${total} quests done (${pct}%)</span></div>
       <div class="sgrid">
-        ${tile('🔥', s.cur + 'w', 'current streak')}
+        ${tile('🔥', s.cur + 'w', 'streak')}
         ${tile('🏆', s.best + 'w', 'best streak')}
-        ${tile('📅', yearN, 'memories in ' + year)}
+        ${tile('📅', yearN, 'in ' + year)}
         ${tile('📷', photos, 'photos')}
         ${tile('📍', places, 'places')}
         ${topTag ? tile(tagInfo(topTag[0])?.[1] || '✨', tagInfo(topTag[0])?.[2] || topTag[0], 'top vibe') : tile('✨', '–', 'top vibe')}
@@ -1159,12 +1164,12 @@ function viewFeed() {
     const last = cs[cs.length - 1];
     return `
       <article class="card entry">
-        <div class="head">${face(e.author_id, 34)}<div class="grow"><h3>${esc(q?.title || 'Quest')}</h3><div class="meta">${fmtDate(e.done_on)}${q?.location ? ` · 📍 ${esc(q.location)}` : ''}</div></div>${e.author_id === myId() ? `<button class="edit-btn" data-act="edit-entry" data-id="${e.id}" aria-label="Edit diary entry">✏️ Edit</button>` : ''}</div>
+        <div class="head">${face(e.author_id, 34)}<div class="grow"><h3>${esc(q?.title || 'Quest')}</h3><div class="meta"><b class="by">${esc((nameOf(e.author_id) || '').split(' ')[0])}</b> · ${fmtDate(e.done_on)}${q?.location ? ` · 📍 ${esc(q.location)}` : ''}</div></div>${e.author_id === myId() ? `<button class="edit-btn" data-act="edit-entry" data-id="${e.id}" aria-label="Edit diary entry">✏️ Edit</button>` : ''}</div>
         ${e.note ? `<p class="note">${esc(e.note)}</p>` : ''}
         ${photoGrid(e)}
         ${!e.note && !e.photo_paths.length ? (e.author_id === myId() ? `<button class="blank-entry" data-act="edit-entry" data-id="${e.id}">✏️ No story yet. Add what happened and a few photos.</button>` : `<div class="blank-entry plain">No story yet. Add a photo or say something 👇</div>`) : ''}
         ${who ? `<div class="faces">${who}</div>` : ''}
-        <div class="react-row">${reactBar(e)}<button class="cbtn" data-act="open-entry" data-id="${e.id}">💬 ${cs.length || 'Comment'}</button>${addPhotosBtn(e)}</div>
+        <div class="react-row">${reactBarCompact(e)}<button class="cbtn" data-act="open-entry" data-id="${e.id}">💬 ${cs.length || 'Comment'}</button>${addPhotosBtn(e)}</div>
         ${last ? `<button class="cprev" data-act="open-entry" data-id="${e.id}"><b>${esc(nameOf(last.author_id))}</b> ${esc(last.body)}</button>` : ''}
       </article>`;
   }).join('');
@@ -1414,6 +1419,8 @@ const acts = {
       : await sb.from('quest_participants').delete().match({ quest_id: q.id, user_id: myId() });
     if (res.error) { fail(res.error); await reloadGroup(); }
   },
+  'react-more': (t) => { state.reactOpen = t.dataset.entry; const y = window.scrollY; render(); window.scrollTo(0, y); },
+  'av-locked': (t) => toast(`🔒 Unlocks at Lv ${t.dataset.need}. Finish quests to level up!`),
   'react': async (t) => {
     const entry_id = t.dataset.entry, emoji = t.dataset.emoji;
     const i = state.reactions.findIndex((r) => r.entry_id === entry_id && r.user_id === myId() && r.emoji === emoji);
