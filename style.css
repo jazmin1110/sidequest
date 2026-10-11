@@ -3,11 +3,12 @@
   --bg: #faf7f2;
   --card: #ffffff;
   --ink: #1f1b2e;
-  --muted: #7a7590;
+  --muted: #625d79;
   --line: #ece7dd;
   --accent: #5b4bdb;
   --accent-ink: #ffffff;
   --accent-soft: #ece9ff;
+  --chip: #f0ece3;
   --warm: #ff8a4c;
   --warm-soft: #fff0e6;
   --danger: #d6455d;
@@ -24,6 +25,7 @@
     --accent: #8b7dff;
     --accent-ink: #15131f;
     --accent-soft: #2a2548;
+    --chip: #292539;
     --warm: #ff9d6a;
     --warm-soft: #3a2a22;
     --danger: #ff7089;
@@ -462,3 +464,24 @@ main { padding-bottom: calc(env(safe-area-inset-bottom) + 96px); }
 .filters, .avtabs { -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 30px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 30px), transparent); padding-right: 40px; }
 .sheetfilters { padding-right: 40px; }
 .sgrid .stile em { white-space: nowrap; }
+
+/* ---------- v6 UX batch 3 ---------- */
+.ico { width: 1.05em; height: 1.05em; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; vertical-align: -.17em; flex: none; }
+.tabs button span { display: grid; place-items: center; height: 26px; }
+.tabs button span .ico { width: 24px; height: 24px; }
+.meta .ico { width: 15px; height: 15px; vertical-align: -.2em; opacity: .85; }
+/* calmer palette: purple is for the main action; everything else is neutral */
+.pill { background: var(--chip); color: var(--ink); }
+.code-btn { background: var(--chip); color: var(--ink); }
+.lvlbtn { background: var(--accent-soft); color: var(--accent); }
+.crew-stats div, .stile { background: var(--chip); }
+.stile b, .crew-stats b { color: var(--ink); }
+/* calendar: multi-day quests read as one continuous bar */
+.cal-cell { overflow: visible; }
+.cal-lbl { background: var(--accent); color: var(--accent-ink); padding: 1px 3px; margin: 1px 0 0; border-radius: 4px; width: 100%; text-align: left; position: relative; z-index: 1; }
+.cal-lbl.done { background: #2f9e6f; color: #fff; }
+.cal-lbl:not(.st) { border-top-left-radius: 0; border-bottom-left-radius: 0; margin-left: -8px; width: calc(100% + 8px); }
+.cal-lbl:not(.en) { border-top-right-radius: 0; border-bottom-right-radius: 0; margin-right: -8px; width: calc(100% + 8px); }
+.cal-lbl:not(.st):not(.en) { margin: 1px -8px 0; width: calc(100% + 16px); }
+.crew-row { align-items: flex-start; }
+.hero .stage { width: 94px; height: 140px; }

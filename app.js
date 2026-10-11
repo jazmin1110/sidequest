@@ -393,7 +393,7 @@ function showGroups() {
     <button class="card" data-act="open-group" data-id="${g.id}">
       <div class="crew-row">${crewBadge(g, 46)}<div style="min-width:0"><div class="qt" style="font-weight:800;font-size:18px">${esc(g.name)}</div>
       <div class="meta">${esc(g.description || 'Tap to open')}</div>
-      ${g.info ? `<div class="crewinfo">👥 ${g.info.members}${g.info.next ? ` · next: <b>${esc(g.info.next.title)}</b>, ${fmtShort(g.info.next.due_date)}` : ' · nothing planned yet'}</div>` : ''}</div></div>
+      ${g.info ? `<div class="crewinfo">${ico('users')} ${g.info.members}${g.info.next ? ` · next: <b>${esc(g.info.next.title)}</b>, ${fmtShort(g.info.next.due_date)}` : ' · nothing planned yet'}</div>` : ''}</div></div>
     </button>`).join('');
   $app.innerHTML = `
     <header class="top">
@@ -401,8 +401,9 @@ function showGroups() {
       <button class="icon-btn" data-act="profile" aria-label="Your profile">${avatar(state.profile.avatar_seed, 36)}</button>
     </header>
     <main>
+      ${state.groups.length ? `<div class="section-title">Your crews</div>${list}` : ''}
       <section class="hero">
-        <div class="stage" style="background:#${avDecode(state.profile.avatar_seed).bg}">${figure(state.profile.avatar_seed, 150)}</div>
+        <div class="stage" style="background:#${avDecode(state.profile.avatar_seed).bg}">${figure(state.profile.avatar_seed, 124)}</div>
         <div class="hero-txt">
           <div class="hi">Your character</div>
           <div class="herolv">Lv ${levelOf(myXp())} · ${esc(levelName(levelOf(myXp())))}</div>
@@ -412,8 +413,7 @@ function showGroups() {
         </div>
       </section>
       ${onboardingCard()}
-      ${state.groups.length ? `<div class="section-title">Your crews</div>${list}` : `
-        <div class="empty"><div class="big">🧭</div><p>No crew yet. Start one, or join with an invite code from a friend.</p></div>`}
+      ${state.groups.length ? '' : `<div class="empty"><div class="big">🧭</div><p>No crew yet. Start one, or join with an invite code from a friend.</p></div>`}
       <div class="section-title">Start a new crew</div>
       <form data-form="createGroup" class="row">
         <input type="text" name="name" required maxlength="60" placeholder="e.g. College barkada" style="margin:0">
@@ -499,11 +499,21 @@ function subscribe() {
 }
 function unsubscribe() { if (state.chan) { sb.removeChannel(state.chan); state.chan = null; } }
 
+// ---------- icons (one consistent set instead of mixed emoji) ----------
+const ICONS = {
+  map: '<path d="M9 4 3 6.5v13L9 17l6 3 6-2.5v-13L15 7 9 4Z"/><path d="M9 4v13M15 7v13"/>',
+  cal: '<rect x="3.5" y="5" width="17" height="15.5" rx="3"/><path d="M3.5 10h17M8 3v4M16 3v4"/>',
+  book: '<path d="M12 6.5C10.5 5 8 4.5 4 4.5v14c4 0 6.5.5 8 2 1.5-1.5 4-2 8-2v-14c-4 0-6.5.5-8 2Z"/><path d="M12 6.5v14"/>',
+  users: '<circle cx="9" cy="8.5" r="3.3"/><path d="M2.8 20c.4-3.6 3-5.6 6.2-5.6s5.8 2 6.2 5.6"/><path d="M16 5.4a3.2 3.2 0 0 1 0 6.2M18 14.7c2 .6 3.2 2.4 3.4 5.3"/>',
+  pin: '<path d="M12 21s-6.5-5.6-6.5-11a6.5 6.5 0 0 1 13 0c0 5.4-6.5 11-6.5 11Z"/><circle cx="12" cy="10" r="2.3"/>',
+};
+const ico = (n) => `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true">${ICONS[n]}</svg>`;
+
 // ---------- group screen ----------
 function render() {
   if (!state.group) return;
   const g = state.group;
-  const tabs = [['quests', '🗺️', 'Quests'], ['calendar', '📅', 'Calendar'], ['diary', '📖', 'Diary'], ['crew', '👥', 'Crew']];
+  const tabs = [['quests', ico('map'), 'Quests'], ['calendar', ico('cal'), 'Calendar'], ['diary', ico('book'), 'Diary'], ['crew', ico('users'), 'Crew']];
   $app.innerHTML = `
     <header class="top">
       <button class="icon-btn" data-act="back" aria-label="All crews">‹</button>
@@ -526,7 +536,7 @@ const questCard = (q) => {
     <button class="qmain" data-act="open-quest" data-id="${q.id}">
       <div class="qt">${esc(q.title)}</div>
       ${q.tags?.length ? `<div class="pills">${tagPills(q.tags)}</div>` : ''}
-      <div class="meta">${q.status === 'done' ? '<span class="cd ok">✓ Done</span>' : cdChip(q)}${q.due_date ? '📅 ' + whenText(q) : ''}${q.location ? ` &nbsp;<span class="nw">📍 ${esc(q.location)}</span>` : ''}</div>
+      <div class="meta">${q.status === 'done' ? '<span class="cd ok">✓ Done</span>' : cdChip(q)}${q.due_date ? ico('cal') + ' ' + whenText(q) : ''}${q.location ? ` &nbsp;<span class="nw">${ico('pin')} ${esc(q.location)}</span>` : ''}</div>
     </button>
     <div class="qfoot">
       ${q.quest_participants.length ? `<div class="faces">${q.quest_participants.map((p) => face(p.user_id, 26)).join('')}</div>` : ''}${q.maybe?.length ? `<span class="maybe-n">+${q.maybe.length} maybe</span>` : ''}
@@ -728,7 +738,11 @@ function viewCalendar() {
     const key = dayKey(y, m, d);
     const qs = questsOn(key);
     const dots = qs.slice(0, 3).map((q) => `<i class="${q.status}"></i>`).join('') + (qs.length > 3 ? '<b>+</b>' : '');
-    const label = qs.length ? `<em class="cal-lbl ${qs[0].status}">${esc(qs[0].title)}</em>${qs.length > 1 ? `<em class="cal-more">+${qs.length - 1}</em>` : ''}` : '';
+    let label = '';
+    if (qs.length) {
+      const q0 = qs[0], sp = questSpan(q0), first = sp[0] === key, last = sp[1] === key, sun = new Date(y, m, d).getDay() === 0 || d === 1;
+      label = `<em class="cal-lbl ${q0.status} ${first ? 'st' : ''} ${last ? 'en' : ''}">${first || sun ? esc(q0.title) : '&nbsp;'}</em>${qs.length > 1 ? `<em class="cal-more">+${qs.length - 1}</em>` : ''}`;
+    }
     cells += `<button class="cal-cell ${key === t ? 'today' : ''} ${qs.length ? 'has' : ''}" data-act="cal-day" data-date="${key}"><span>${d}</span><div class="dots">${dots}</div>${label}</button>`;
   }
   const monthPrefix = `${y}-${pad(m + 1)}-`;
@@ -821,7 +835,7 @@ function questSheet(q) {
   const started = !q.due_date || q.due_date <= today();   // "We did it!" only gets the spotlight once the day has come
   openSheet(`
     <h2>${esc(q.title)}</h2>
-    <div class="meta">${cdChip(q)}📅 ${whenText(q)}${q.location ? ` &nbsp;📍 ${esc(q.location)}` : ''}</div>
+    <div class="meta">${cdChip(q)}${ico('cal')} ${whenText(q)}${q.location ? ` &nbsp;${ico('pin')} ${esc(q.location)}` : ''}</div>
     ${q.tags?.length ? `<div class="pills">${tagPills(q.tags)}</div>` : ''}
     ${q.details ? `<p class="note" style="white-space:pre-wrap;margin:10px 0">${esc(q.details)}</p>` : ''}
     <div class="rsvp">
@@ -835,7 +849,7 @@ function questSheet(q) {
       ${q.no.length ? `<div><b>Can't</b> <span class="names">${q.no.map((u) => `<span class="nm">${face(u, 24)}${esc((nameOf(u) || '').split(' ')[0])}</span>`).join('')}</span></div>` : ''}
     </div>
     <button class="btn ${started ? 'primary' : ''}" data-act="complete" data-id="${q.id}">✅ ${started ? 'We did it!' : 'We already did this'}</button>
-    ${q.due_date ? `<button class="btn line" data-act="ics" data-id="${q.id}">📅 Add to my phone calendar</button>` : ''}
+    ${q.due_date ? `<button class="btn line" data-act="ics" data-id="${q.id}">Add to my phone calendar</button>` : ''}
     <details class="arch"><summary>✏️ Edit quest</summary>
       <form data-form="editQuest" data-id="${q.id}" style="margin-top:10px">
         <input type="text" name="title" required maxlength="120" value="${esc(q.title)}">
@@ -876,7 +890,7 @@ function doneSheet(q) {
   const e = state.entries.find((x) => x.quest_id === q.id);
   openSheet(`
     <h2>${esc(q.title)}</h2>
-    <div class="meta">${e ? fmtDate(e.done_on) : ''}${q.location ? ` · 📍 ${esc(q.location)}` : ''}</div>
+    <div class="meta">${e ? fmtDate(e.done_on) : ''}${q.location ? ` · ${ico('pin')} ${esc(q.location)}` : ''}</div>
     ${q.quest_participants.length ? `<div class="faces" style="margin:12px 0">${q.quest_participants.map((p) => face(p.user_id, 30)).join('')}</div>` : ''}
     ${e?.note ? `<p class="note" style="white-space:pre-wrap;margin:10px 0">${esc(e.note)}</p>` : ''}
     ${e ? photoGrid(e) : ''}
@@ -1164,7 +1178,7 @@ function viewFeed() {
     const last = cs[cs.length - 1];
     return `
       <article class="card entry">
-        <div class="head">${face(e.author_id, 34)}<div class="grow"><h3>${esc(q?.title || 'Quest')}</h3><div class="meta"><b class="by">${esc((nameOf(e.author_id) || '').split(' ')[0])}</b> · ${fmtDate(e.done_on)}${q?.location ? ` · 📍 ${esc(q.location)}` : ''}</div></div>${e.author_id === myId() ? `<button class="edit-btn" data-act="edit-entry" data-id="${e.id}" aria-label="Edit diary entry">✏️ Edit</button>` : ''}</div>
+        <div class="head">${face(e.author_id, 34)}<div class="grow"><h3>${esc(q?.title || 'Quest')}</h3><div class="meta"><b class="by">${esc((nameOf(e.author_id) || '').split(' ')[0])}</b> · ${fmtDate(e.done_on)}${q?.location ? ` · ${ico('pin')} ${esc(q.location)}` : ''}</div></div>${e.author_id === myId() ? `<button class="edit-btn" data-act="edit-entry" data-id="${e.id}" aria-label="Edit diary entry">✏️ Edit</button>` : ''}</div>
         ${e.note ? `<p class="note">${esc(e.note)}</p>` : ''}
         ${photoGrid(e)}
         ${!e.note && !e.photo_paths.length ? (e.author_id === myId() ? `<button class="blank-entry" data-act="edit-entry" data-id="${e.id}">✏️ No story yet. Add what happened and a few photos.</button>` : `<div class="blank-entry plain">No story yet. Add a photo or say something 👇</div>`) : ''}
@@ -1191,7 +1205,7 @@ function viewBook() {
       const thumbs = e.photo_paths.slice(0, 3).map((p) => state.photoUrls[p]).filter(Boolean).map((u) => `<img src="${u}" alt="" loading="lazy">`).join('');
       return `<button class="card bk" data-act="open-entry" data-id="${e.id}">
         <div class="bkth ${thumbs ? '' : 'none'}">${thumbs || '📖'}</div>
-        <div class="bkt"><b>${esc(q?.title || 'Quest')}</b><span>${fmtDate(e.done_on)}${q?.location ? ` · 📍 ${esc(q.location)}` : ''}</span>${e.note ? `<p>${esc(e.note)}</p>` : ''}</div></button>`;
+        <div class="bkt"><b>${esc(q?.title || 'Quest')}</b><span>${fmtDate(e.done_on)}${q?.location ? ` · ${ico('pin')} ${esc(q.location)}` : ''}</span>${e.note ? `<p>${esc(e.note)}</p>` : ''}</div></button>`;
     }).join('');
   }).join('');
   return `
