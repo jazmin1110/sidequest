@@ -427,3 +427,5 @@ button.blank-entry { color: var(--accent); border-color: var(--accent); }
 .lb-bar button:disabled { opacity: .3; }
 .lb-bar .lb-like { font-size: 18px; }
 .lb-bar .lb-like.on { background: rgba(255, 90, 120, .35); }
+
+.pending { display: block; width: 100%; border: 0; background: var(--warm); color: #2a1608; font-weight: 800; font-size: 13.5px; padding: 9px 12px; text-align: center; }

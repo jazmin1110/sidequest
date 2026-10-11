@@ -23,6 +23,7 @@ const state = {
   likes: [],       // hearts on single photos {entry_id, path, user_id}
   lb: null,        // photo viewer {entry, i} while open
   myQuests: 0, pushOn: false,   // for the new-member checklist
+  pending: 0,      // uploads waiting in the outbox (bad signal)
   photoUrls: {},   // storage path -> signed url
   chan: null,      // realtime channel
 };
@@ -281,6 +282,7 @@ async function afterLogin(user) {
   await loadGroups();
   const last = state.groups.find((g) => g.id === localStorage.getItem('sq_last'));
   if (last) await openGroup(last); else showGroups();
+  flushOutbox().then(async (done) => { if (done.length && state.group) { await reloadGroup(); toast('Uploaded ✅'); } }).catch(() => {});   // anything left from a bad-signal moment
 }
 
 async function loadGroups() {
@@ -473,6 +475,7 @@ function render() {
       </div>
       <button class="icon-btn" data-act="profile" aria-label="Your profile">${avatar(state.profile.avatar_seed, 36)}</button>
     </header>
+    ${state.pending ? `<button class="pending" data-act="retry-outbox">📤 ${state.pending} upload${state.pending > 1 ? 's' : ''} waiting for signal · tap to retry</button>` : ''}
     <main>${state.tab === 'quests' ? viewQuests() : state.tab === 'calendar' ? viewCalendar() : state.tab === 'diary' ? viewDiary() : viewCrew()}</main>
     ${state.tab === 'quests' || state.tab === 'calendar' ? `<button class="fab" data-act="new-quest" aria-label="New quest">＋</button>` : ''}
     <nav class="tabs">${tabs.map(([k, ic, lb]) => `<button class="${state.tab === k ? 'on' : ''}" data-act="tab" data-tab="${k}"><span>${ic}</span>${lb}</button>`).join('')}</nav>`;
@@ -1141,29 +1144,98 @@ async function addPhotosToEntry(entryId, files) {
   const e = state.entries.find((x) => x.id === entryId);
   if (!e || !files.length) return;
   if (e.photo_paths.length + files.length > 12) return toast(`Max 12 photos per entry (it has ${e.photo_paths.length})`);
-  toast('Uploading…');
-  const gid = state.group.id, added = [];
-  try {
-    for (const file of files) {
-      const blob = await compress(file);
-      const path = `${gid}/${e.quest_id || 'misc'}/${crypto.randomUUID()}.jpg`;
-      const { error } = await sb.storage.from('photos').upload(path, blob, { contentType: 'image/jpeg' });
-      if (error) throw error;
-      added.push(path);
-    }
-    const { error } = await sb.rpc('add_entry_photos', { eid: e.id, paths: added });
-    if (error) throw error;
-  } catch (err) {
-    if (added.length) await sb.storage.from('photos').remove(added);
-    throw err;
-  }
-  await reloadGroup(); toast('Photos added 📷');
+  toast(navigator.onLine ? 'Uploading… 📤' : 'No signal. Saved on your phone, uploads when you are back online.');
+  const blobs = []; for (const f of files) blobs.push(await compress(f));
+  const job = { id: crypto.randomUUID(), kind: 'addphotos', user_id: myId(), group_id: state.group.id, quest_id: e.quest_id, entry_id: e.id, blobs, created: Date.now(), attempts: 0 };
+  let queued = true;
+  try { await obPut(job); } catch { queued = false; }
+  const done = queued ? await flushOutbox() : (await runJob(job), [job]);
+  if (done.some((j) => j.id === job.id)) { await reloadGroup(); toast('Photos added 📷'); }
+  else toast('Saved on your phone. Will retry automatically.');
 }
 document.addEventListener('change', (ev) => {
   const inp = ev.target.closest?.('input[data-addphotos]');
   if (!inp) return;
   const files = [...inp.files]; inp.value = '';
   addPhotosToEntry(inp.dataset.addphotos, files).catch(fail);
+});
+
+// ---------- outbox: photos survive a bad signal ----------
+// Finishing a quest (or adding photos) is first saved on the phone (IndexedDB), then uploaded. If the signal drops,
+// it stays in the outbox and uploads on its own when you're back online. Each step is remembered, so a retry never double-posts.
+let idbConn = null;
+const idbOpen = () => new Promise((res, rej) => {
+  if (!('indexedDB' in window)) return rej(new Error('no indexedDB'));
+  const r = indexedDB.open('sidequest', 1);
+  r.onupgradeneeded = () => r.result.createObjectStore('outbox', { keyPath: 'id' });
+  r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+});
+async function idb(mode, fn) {
+  idbConn ||= await idbOpen();
+  return new Promise((res, rej) => {
+    const tx = idbConn.transaction('outbox', mode); const rq = fn(tx.objectStore('outbox'));
+    tx.oncomplete = () => res(rq?.result); tx.onerror = () => rej(tx.error); tx.onabort = () => rej(tx.error);
+  });
+}
+const obPut = (job) => idb('readwrite', (st) => st.put(job));
+const obDel = (id) => idb('readwrite', (st) => st.delete(id));
+const obAll = () => idb('readonly', (st) => st.getAll());
+
+async function uploadBlobs(job, folder) {
+  job.paths ||= [];
+  while (job.paths.length < job.blobs.length) {
+    const path = `${job.group_id}/${folder}/${crypto.randomUUID()}.jpg`;
+    const { error } = await sb.storage.from('photos').upload(path, job.blobs[job.paths.length], { contentType: 'image/jpeg' });
+    if (error) throw error;
+    job.paths.push(path); await obPut(job).catch(() => {});   // remember progress
+  }
+}
+async function runJob(job) {
+  if (job.kind === 'complete') {
+    await uploadBlobs(job, job.quest_id);
+    if (!job.entry_done) {
+      let existing = null;   // a retry may follow an insert whose answer got lost: look before inserting again
+      if (job.attempts > 0) existing = (await sb.from('entries').select('id').eq('quest_id', job.quest_id).eq('author_id', job.user_id).limit(1)).data?.[0];
+      const { error } = existing
+        ? await sb.from('entries').update({ photo_paths: job.paths }).eq('id', existing.id)
+        : await sb.from('entries').insert({ quest_id: job.quest_id, group_id: job.group_id, author_id: job.user_id, note: job.note, photo_paths: job.paths, done_on: job.done_on });
+      if (error) throw error;
+      job.entry_done = true; await obPut(job).catch(() => {});
+    }
+    if (!job.quest_done) {
+      const { error } = await sb.from('quests').update({ status: 'done', done_at: new Date().toISOString() }).eq('id', job.quest_id);
+      if (error) throw error;
+      job.quest_done = true; await obPut(job).catch(() => {});
+    }
+    await setParticipants(job.quest_id, job.who);
+  } else if (job.kind === 'addphotos') {
+    await uploadBlobs(job, job.quest_id || 'misc');
+    const { error } = await sb.rpc('add_entry_photos', { eid: job.entry_id, paths: job.paths });
+    if (error) throw error;
+  }
+}
+let flushing = false;
+async function flushOutbox() {
+  if (flushing || !state.user) return [];
+  flushing = true; const done = [];
+  try {
+    const jobs = (await obAll()).filter((j) => j.user_id === myId()).sort((a, b) => a.created - b.created);
+    for (const job of jobs) {
+      try { await runJob(job); await obDel(job.id); done.push(job); }
+      catch (err) { job.attempts = (job.attempts || 0) + 1; job.last_error = err?.message; await obPut(job).catch(() => {}); console.error('outbox', err); break; }   // stop here, keep order, retry later
+    }
+  } catch (err) { console.error(err); } finally { flushing = false; }
+  await refreshPending();
+  return done;
+}
+async function refreshPending() {
+  try { state.pending = (await obAll()).filter((j) => j.user_id === myId()).length; } catch { state.pending = 0; }
+  if (state.group) { const y = window.scrollY; render(); window.scrollTo(0, y); }
+}
+window.addEventListener('online', async () => {
+  if (!state.user) return;
+  const done = await flushOutbox();
+  if (done.length) { await reloadGroup(); toast('Uploaded ✅'); }
 });
 
 // ---------- new-member checklist (home screen) ----------
@@ -1319,6 +1391,7 @@ const acts = {
       : await sb.from('photo_likes').insert({ entry_id: e.id, path: p, user_id: myId() });
     if (res.error) { fail(res.error); await reloadGroup(); }
   },
+  'retry-outbox': async () => { toast('Retrying…'); const done = await flushOutbox(); if (done.length) { await reloadGroup(); toast('Uploaded ✅'); } else toast('Still no luck. Will keep trying.'); },
   'copy-code': async () => { try { await navigator.clipboard.writeText(state.group.invite_code); toast('Code copied'); } catch { toast(state.group.invite_code); } },
   'onb-hide': () => { try { localStorage.setItem('sq_onb_off', '1'); } catch { /* fine */ } showGroups(); },
   'edit-comment': (t) => { state.editingComment = t.dataset.id; const c = state.comments.find((x) => x.id === t.dataset.id); if (c) entrySheet(c.entry_id); },
@@ -1488,25 +1561,18 @@ const forms = {
     const fd = new FormData(f), qid = f.dataset.id, gid = state.group.id;
     const lvBefore = levelOf(myXp());
     const files = [...f.querySelector('input[type=file]').files].slice(0, 6);
-    const paths = [];
-    for (const file of files) {
-      const blob = await compress(file);
-      const path = `${gid}/${qid}/${crypto.randomUUID()}.jpg`;
-      const { error } = await sb.storage.from('photos').upload(path, blob, { contentType: 'image/jpeg' });
-      if (error) throw error;
-      paths.push(path);
-    }
-    const ins = await sb.from('entries').insert({
-      quest_id: qid, group_id: gid, author_id: myId(),
-      note: fd.get('note').trim() || null, photo_paths: paths, done_on: fd.get('done_on'),
-    });
-    if (ins.error) throw ins.error;
-    const upd = await sb.from('quests').update({ status: 'done', done_at: new Date().toISOString() }).eq('id', qid);
-    if (upd.error) throw upd.error;
-    await setParticipants(qid, checkedWho(f));
-    closeSheet(); state.tab = 'diary'; await reloadGroup();
-    const after = levelOf(myXp());
-    if (after > lvBefore) levelUpSheet(after); else toast('Saved to the diary 📖 +XP');
+    const blobs = []; for (const file of files) blobs.push(await compress(file));
+    const job = { id: crypto.randomUUID(), kind: 'complete', user_id: myId(), group_id: gid, quest_id: qid, note: fd.get('note').trim() || null, done_on: fd.get('done_on'), who: checkedWho(f), blobs, created: Date.now(), attempts: 0 };
+    let queued = true;
+    try { await obPut(job); } catch { queued = false; }     // no IndexedDB (private mode?): do it the direct way
+    closeSheet(); state.tab = 'diary';
+    toast(navigator.onLine ? 'Saving… 📤' : 'No signal. Saved on your phone, uploads when you are back online.');
+    const done = queued ? await flushOutbox() : (await runJob(job), [job]);
+    if (done.some((j) => j.id === job.id)) {
+      await reloadGroup();
+      const after = levelOf(myXp());
+      if (after > lvBefore) levelUpSheet(after); else toast('Saved to the diary 📖 +XP');
+    } else { render(); toast('Saved on your phone. Will retry automatically.'); }
   }),
 
   editEntry: (f) => run(f, async () => {
