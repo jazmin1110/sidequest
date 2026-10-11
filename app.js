@@ -20,6 +20,9 @@ const state = {
   archived: [],    // quests tucked away (hidden from lists + calendar)
   diaryMode: 'feed', bookYear: null,   // diary: 'feed' or 'book' (memory book)
   editingComment: null,                // id of the comment being edited
+  likes: [],       // hearts on single photos {entry_id, path, user_id}
+  lb: null,        // photo viewer {entry, i} while open
+  myQuests: 0, pushOn: false,   // for the new-member checklist
   photoUrls: {},   // storage path -> signed url
   chan: null,      // realtime channel
 };
@@ -290,7 +293,7 @@ async function loadGroups() {
 async function loadGroupInfo() {
   try {
     const ids = state.groups.map((g) => g.id);
-    if (!ids.length) return;
+    if (!ids.length) throw new Error('none');
     const [m, q] = await Promise.all([
       sb.from('members').select('group_id').in('group_id', ids),
       sb.from('quests').select('group_id,title,due_date').in('group_id', ids).eq('status', 'open').eq('archived', false).gte('due_date', today()).order('due_date', { ascending: true }),
@@ -300,6 +303,11 @@ async function loadGroupInfo() {
       g.info = { members: m.data.filter((x) => x.group_id === g.id).length, next: q.data.find((x) => x.group_id === g.id && x.due_date) || null };
     });
   } catch { /* the home cards still work without it */ }
+  try {
+    const mine = await sb.from('quests').select('id', { count: 'exact', head: true }).eq('created_by', myId());
+    state.myQuests = mine.count || 0;
+    state.pushOn = (await pushStatus()) === 'on';
+  } catch { /* checklist just shows the step as open */ }
 }
 
 // ---------- auth screen ----------
@@ -362,6 +370,7 @@ function showGroups() {
           <button class="btn primary" data-act="profile" style="margin:8px 0 0">👕 Dress up</button>
         </div>
       </section>
+      ${onboardingCard()}
       ${state.groups.length ? `<div class="section-title">Your crews</div>${list}` : `
         <div class="empty"><div class="big">🧭</div><p>No crew yet. Start one, or join with an invite code from a friend.</p></div>`}
       <div class="section-title">Start a new crew</div>
@@ -390,25 +399,32 @@ async function loadGroupData() {
   const gid = state.group.id;
   const [m, q, e] = await Promise.all([
     sb.from('members').select('role, profiles(id,display_name,avatar_seed)').eq('group_id', gid),
-    sb.from('quests').select('*, quest_participants(user_id)').eq('group_id', gid).order('created_at', { ascending: false }),
+    sb.from('quests').select('*, quest_participants(user_id, rsvp)').eq('group_id', gid).order('created_at', { ascending: false }),
     sb.from('entries').select('*').eq('group_id', gid).order('done_on', { ascending: false }).order('created_at', { ascending: false }),
   ]);
   const err = m.error || q.error || e.error;
   if (err) return fail(err);
   state.members = m.data.filter((r) => r.profiles).map((r) => ({ ...r.profiles, role: r.role }));
+  q.data.forEach((x) => {   // split the answers: "in" stays in quest_participants (everything else relies on that), maybe/no live beside it
+    const all = x.quest_participants || [];
+    x.maybe = all.filter((p) => p.rsvp === 'maybe').map((p) => p.user_id);
+    x.no = all.filter((p) => p.rsvp === 'no').map((p) => p.user_id);
+    x.quest_participants = all.filter((p) => (p.rsvp || 'in') === 'in');
+  });
   state.quests = q.data.filter((x) => !x.archived);
   state.archived = q.data.filter((x) => x.archived);
   state.entries = e.data;
   // comments + reactions for those diary entries
   const ids = e.data.map((x) => x.id);
-  state.comments = []; state.reactions = [];
+  state.comments = []; state.reactions = []; state.likes = [];
   if (ids.length) {
-    const [c, r] = await Promise.all([
+    const [c, r, l] = await Promise.all([
       sb.from('entry_comments').select('*').in('entry_id', ids).order('created_at', { ascending: true }),
       sb.from('entry_reactions').select('*').in('entry_id', ids),
+      sb.from('photo_likes').select('*').in('entry_id', ids),
     ]);
     if (c.error || r.error) return fail(c.error || r.error);
-    state.comments = c.data; state.reactions = r.data;
+    state.comments = c.data; state.reactions = r.data; state.likes = l.error ? [] : (l.data || []);
   }
   await loadXp(state.members.map((m) => m.id));
   await signPhotos();
@@ -421,6 +437,7 @@ const refresh = debounce(async () => {
   await loadGroupData(); render(); window.scrollTo(0, y);
   const open = document.getElementById('sheet')?.dataset.entry;
   if (open && state.entries.some((x) => x.id === open)) entrySheet(open);   // keep an open comments sheet live
+  if (state.lb) renderLightbox();
 }, 400);
 
 function subscribe() {
@@ -432,6 +449,7 @@ function subscribe() {
     .on('postgres_changes', { event: '*', schema: 'public', table: 'quest_participants' }, refresh)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'entry_comments' }, refresh)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'entry_reactions' }, refresh)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'photo_likes' }, refresh)
     .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'groups', filter: `id=eq.${gid}` }, async () => {
       const { data } = await sb.from('groups').select(GROUP_COLS).eq('id', gid).single();
       if (data && state.group?.id === gid) { Object.assign(state.group, data); render(); }
@@ -451,7 +469,7 @@ function render() {
       ${crewBadge(g, 34)}
       <div class="grow">
         <h1>${esc(g.name)}</h1>
-        <button class="code-btn" data-act="share">Invite · ${esc(g.invite_code)}</button>
+        <button class="code-btn" data-act="share">＋ Invite friends</button>
       </div>
       <button class="icon-btn" data-act="profile" aria-label="Your profile">${avatar(state.profile.avatar_seed, 36)}</button>
     </header>
@@ -470,7 +488,7 @@ const questCard = (q) => {
       <div class="meta">${q.due_date ? '📅 ' + fmtDate(q.due_date) : ''}${q.location ? ` &nbsp;<span class="nw">📍 ${esc(q.location)}</span>` : ''}</div>
     </button>
     <div class="qfoot">
-      ${q.quest_participants.length ? `<div class="faces">${q.quest_participants.map((p) => face(p.user_id, 26)).join('')}</div>` : ''}
+      ${q.quest_participants.length ? `<div class="faces">${q.quest_participants.map((p) => face(p.user_id, 26)).join('')}</div>` : ''}${q.maybe?.length ? `<span class="maybe-n">+${q.maybe.length} maybe</span>` : ''}
       ${q.status === 'open' ? `<button class="imin ${mine ? 'on' : ''}" data-act="imin" data-id="${q.id}">${mine ? "✓ I'm in" : "🙋 I'm in"}</button>` : ''}
     </div>
   </div>`;
@@ -559,9 +577,47 @@ function entrySheet(id) {
 }
 
 function photoGrid(e) {
-  const imgs = e.photo_paths.map((p) => state.photoUrls[p]).filter(Boolean);
-  return imgs.length ? `<div class="photos p${Math.min(imgs.length, 5)}">${imgs.map((u) => `<a href="${u}" target="_blank" rel="noopener"><img src="${u}" alt="" loading="lazy"></a>`).join('')}</div>` : '';
+  const tiles = e.photo_paths.map((p, i) => [p, i]).filter(([p]) => state.photoUrls[p]);
+  const likesFor = (p) => state.likes.filter((l) => l.entry_id === e.id && l.path === p).length;
+  return tiles.length ? `<div class="photos p${Math.min(tiles.length, 5)}">${tiles.map(([p, i]) => `<button class="ph-tile" data-act="open-photo" data-entry="${e.id}" data-i="${i}" aria-label="Open photo"><img src="${state.photoUrls[p]}" alt="" loading="lazy">${likesFor(p) ? `<b class="phlike">❤️ ${likesFor(p)}</b>` : ''}</button>`).join('')}</div>` : '';
 }
+
+// ---------- photo viewer ----------
+function renderLightbox() {
+  const e = state.lb && state.entries.find((x) => x.id === state.lb.entry);
+  if (!e) return closeLightbox();
+  const paths = e.photo_paths.filter((p) => state.photoUrls[p]);
+  if (!paths.length) return closeLightbox();
+  state.lb.i = Math.max(0, Math.min(state.lb.i, paths.length - 1));
+  const p = paths[state.lb.i];
+  const n = state.likes.filter((l) => l.entry_id === e.id && l.path === p).length;
+  const mine = state.likes.some((l) => l.entry_id === e.id && l.path === p && l.user_id === myId());
+  let box = document.getElementById('lightbox');
+  if (!box) { box = document.createElement('div'); box.id = 'lightbox'; document.body.appendChild(box); document.body.classList.add('noscroll'); }
+  box.innerHTML = `<button class="lb-x" data-act="lb-close" aria-label="Close">✕</button>
+    <div class="lb-stage"><img src="${state.photoUrls[p]}" alt=""></div>
+    <div class="lb-bar"><button data-act="lb-prev" aria-label="Previous" ${state.lb.i === 0 ? 'disabled' : ''}>‹</button>
+      <button class="lb-like ${mine ? 'on' : ''}" data-act="lb-like">${mine ? '❤️' : '🤍'} ${n || ''}</button>
+      <span>${state.lb.i + 1} / ${paths.length}</span>
+      <button data-act="lb-next" aria-label="Next" ${state.lb.i === paths.length - 1 ? 'disabled' : ''}>›</button></div>`;
+}
+function closeLightbox() {
+  state.lb = null; document.getElementById('lightbox')?.remove();
+  if (!document.getElementById('sheet')) document.body.classList.remove('noscroll');
+}
+let lbTouchX = null;
+document.addEventListener('touchstart', (ev) => { if (ev.target.closest?.('#lightbox')) lbTouchX = ev.touches[0].clientX; }, { passive: true });
+document.addEventListener('touchend', (ev) => {
+  if (lbTouchX === null || !state.lb) return;
+  const dx = ev.changedTouches[0].clientX - lbTouchX; lbTouchX = null;
+  if (Math.abs(dx) > 50) { state.lb.i += dx < 0 ? 1 : -1; renderLightbox(); }
+});
+document.addEventListener('keydown', (ev) => {
+  if (!state.lb) return;
+  if (ev.key === 'Escape') closeLightbox();
+  if (ev.key === 'ArrowRight') { state.lb.i++; renderLightbox(); }
+  if (ev.key === 'ArrowLeft') { state.lb.i--; renderLightbox(); }
+});
 
 function viewCrew() {
   const doneBy = (id) => state.quests.filter((q) => q.status === 'done' && q.quest_participants.some((p) => p.user_id === id)).length;
@@ -577,6 +633,7 @@ function viewCrew() {
       <div class="crew-top">${crewBadge(g, 64)}<div class="grow"><h2>${esc(g.name)}</h2><div class="meta">Since ${g.created_at ? new Date(g.created_at).toLocaleDateString(undefined, { month: 'long', year: 'numeric' }) : '—'}</div></div></div>
       ${g.description ? `<p class="crew-desc">${esc(g.description)}</p>` : `<p class="crew-desc muted">No description yet. Add your crew's story, motto, or inside joke.</p>`}
       <div class="crew-stats"><div><b>${state.members.length}</b><span>members</span></div><div><b>${state.quests.length}</b><span>quests</span></div><div><b>${totalDone}</b><span>done</span></div></div>
+      <button class="codecopy" data-act="copy-code">Invite code: <b>${esc(g.invite_code)}</b> · tap to copy</button>
       <button class="btn" data-act="edit-crew" style="margin-top:12px">✏️ Edit crew details</button>
     </div>`;
   return `
@@ -703,8 +760,16 @@ function questSheet(q) {
     <div class="meta">${q.due_date ? '📅 ' + fmtDate(q.due_date) : '📅 No date yet'}${q.location ? ` &nbsp;📍 ${esc(q.location)}` : ''}</div>
     ${q.tags?.length ? `<div class="pills">${tagPills(q.tags)}</div>` : ''}
     ${q.details ? `<p class="note" style="white-space:pre-wrap;margin:10px 0">${esc(q.details)}</p>` : ''}
-    <div class="qsum"><div class="faces">${ids.length ? ids.map((u) => face(u, 30)).join('') : '<span class="meta">Nobody yet</span>'}</div>
-      <button class="imin ${mine ? 'on' : ''}" data-act="imin" data-id="${q.id}" data-sheet="1">${mine ? "✓ I'm in" : "🙋 I'm in"}</button></div>
+    <div class="rsvp">
+      <button class="${mine ? 'on' : ''}" data-act="rsvp" data-val="in" data-id="${q.id}">✓ I'm in</button>
+      <button class="${q.maybe.includes(myId()) ? 'on maybe' : ''}" data-act="rsvp" data-val="maybe" data-id="${q.id}">🤔 Maybe</button>
+      <button class="${q.no.includes(myId()) ? 'on no' : ''}" data-act="rsvp" data-val="no" data-id="${q.id}">✕ Can't</button>
+    </div>
+    <div class="who-list">
+      <div><b>In</b> ${ids.length ? `<span class="faces">${ids.map((u) => face(u, 28)).join('')}</span>` : '<span class="meta">nobody yet</span>'}</div>
+      ${q.maybe.length ? `<div><b>Maybe</b> <span class="faces">${q.maybe.map((u) => face(u, 28)).join('')}</span></div>` : ''}
+      ${q.no.length ? `<div><b>Can't</b> <span class="faces">${q.no.map((u) => face(u, 28)).join('')}</span></div>` : ''}
+    </div>
     <button class="btn primary" data-act="complete" data-id="${q.id}">✅ We did it!</button>
     ${q.due_date ? `<button class="btn" data-act="ics" data-id="${q.id}">📅 Add to my phone calendar</button>` : ''}
     <details class="arch"><summary>✏️ Edit quest</summary>
@@ -1101,6 +1166,21 @@ document.addEventListener('change', (ev) => {
   addPhotosToEntry(inp.dataset.addphotos, files).catch(fail);
 });
 
+// ---------- new-member checklist (home screen) ----------
+function onboardingCard() {
+  let off = false; try { off = localStorage.getItem('sq_onb_off') === '1'; } catch { /* fine */ }
+  const steps = [
+    [String(state.profile.avatar_seed || '').startsWith('fb1:'), '👕 Dress up your character', 'profile', 'Dress up'],
+    [state.groups.length > 0, '🧭 Join or start a crew', null, 'Use the forms below'],
+    [state.myQuests > 0, '🗺️ Add your first quest', state.groups[0] ? 'open-group' : null, 'Open your crew'],
+    [state.pushOn, '🔔 Turn on reminders', 'profile', 'Open profile'],
+  ];
+  const left = steps.filter(([d]) => !d).length;
+  if (off || !left) return '';
+  return `<div class="card onb"><div class="onb-h"><b>Getting started</b><span>${steps.length - left}/${steps.length}</span><button class="x" data-act="onb-hide" aria-label="Hide">✕</button></div>
+    ${steps.map(([d, label, act, cta]) => `<div class="onb-row ${d ? 'done' : ''}"><span>${d ? '✅' : '⬜'} ${label}</span>${!d && act ? `<button class="pillbtn" data-act="${act}" ${act === 'open-group' ? `data-id="${state.groups[0].id}"` : ''}>${cta}</button>` : ''}</div>`).join('')}</div>`;
+}
+
 // ---------- photo picker (styled button + thumbnails you can remove) ----------
 const photoPicker = (max) => `<div class="picker" data-max="${max}">
   <label class="pickbtn">📷 Choose photos<input type="file" name="photos" accept="image/*" multiple hidden data-picker></label>
@@ -1183,12 +1263,27 @@ const acts = {
     const q = state.quests.find((x) => x.id === t.dataset.id);
     if (!q) return;
     const mine = q.quest_participants.some((p) => p.user_id === myId());
+    q.maybe = q.maybe.filter((u) => u !== myId()); q.no = q.no.filter((u) => u !== myId());
     q.quest_participants = mine ? q.quest_participants.filter((p) => p.user_id !== myId()) : [...q.quest_participants, { user_id: myId() }];
     const y = window.scrollY; render(); window.scrollTo(0, y);   // instant feel; the database catches up
     if (t.dataset.sheet) questSheet(q);
     const res = mine
       ? await sb.from('quest_participants').delete().match({ quest_id: q.id, user_id: myId() })
-      : await sb.from('quest_participants').insert({ quest_id: q.id, user_id: myId() });
+      : await sb.from('quest_participants').upsert({ quest_id: q.id, user_id: myId(), rsvp: 'in' }, { onConflict: 'quest_id,user_id' });
+    if (res.error) { fail(res.error); await reloadGroup(); }
+  },
+  'rsvp': async (t) => {
+    const q = state.quests.find((x) => x.id === t.dataset.id), val = t.dataset.val;
+    if (!q) return;
+    const cur = q.quest_participants.some((p) => p.user_id === myId()) ? 'in' : q.maybe.includes(myId()) ? 'maybe' : q.no.includes(myId()) ? 'no' : null;
+    const next = cur === val ? null : val;      // tapping your current answer clears it
+    q.maybe = q.maybe.filter((u) => u !== myId()); q.no = q.no.filter((u) => u !== myId());
+    q.quest_participants = q.quest_participants.filter((p) => p.user_id !== myId());
+    if (next === 'in') q.quest_participants.push({ user_id: myId() }); else if (next === 'maybe') q.maybe.push(myId()); else if (next === 'no') q.no.push(myId());
+    const y = window.scrollY; render(); window.scrollTo(0, y); questSheet(q);
+    const res = next
+      ? await sb.from('quest_participants').upsert({ quest_id: q.id, user_id: myId(), rsvp: next }, { onConflict: 'quest_id,user_id' })
+      : await sb.from('quest_participants').delete().match({ quest_id: q.id, user_id: myId() });
     if (res.error) { fail(res.error); await reloadGroup(); }
   },
   'react': async (t) => {
@@ -1203,6 +1298,29 @@ const acts = {
     if (res.error) { fail(res.error); await reloadGroup(); }
   },
   'edit-entry': (t) => editEntrySheet(t.dataset.id),
+  'open-photo': (t) => {
+    const e = state.entries.find((x) => x.id === t.dataset.entry);
+    if (!e) return;
+    const shown = e.photo_paths.filter((p) => state.photoUrls[p]);
+    state.lb = { entry: e.id, i: Math.max(0, shown.indexOf(e.photo_paths[Number(t.dataset.i)])) };
+    renderLightbox();
+  },
+  'lb-close': () => closeLightbox(),
+  'lb-prev': () => { state.lb.i--; renderLightbox(); },
+  'lb-next': () => { state.lb.i++; renderLightbox(); },
+  'lb-like': async () => {
+    const e = state.entries.find((x) => x.id === state.lb.entry);
+    const p = e.photo_paths.filter((x) => state.photoUrls[x])[state.lb.i];
+    const idx = state.likes.findIndex((l) => l.entry_id === e.id && l.path === p && l.user_id === myId());
+    if (idx >= 0) state.likes.splice(idx, 1); else state.likes.push({ entry_id: e.id, path: p, user_id: myId() });
+    renderLightbox(); render();
+    const res = idx >= 0
+      ? await sb.from('photo_likes').delete().match({ entry_id: e.id, path: p, user_id: myId() })
+      : await sb.from('photo_likes').insert({ entry_id: e.id, path: p, user_id: myId() });
+    if (res.error) { fail(res.error); await reloadGroup(); }
+  },
+  'copy-code': async () => { try { await navigator.clipboard.writeText(state.group.invite_code); toast('Code copied'); } catch { toast(state.group.invite_code); } },
+  'onb-hide': () => { try { localStorage.setItem('sq_onb_off', '1'); } catch { /* fine */ } showGroups(); },
   'edit-comment': (t) => { state.editingComment = t.dataset.id; const c = state.comments.find((x) => x.id === t.dataset.id); if (c) entrySheet(c.entry_id); },
   'cancel-edit-comment': (t) => { const id = document.getElementById('sheet')?.dataset.entry; state.editingComment = null; if (id) entrySheet(id); },
   'diary-mode': (t) => { state.diaryMode = t.dataset.mode; render(); window.scrollTo(0, 0); },
@@ -1298,10 +1416,10 @@ async function run(f, fn) {
 }
 
 async function setParticipants(questId, ids) {
-  const del = await sb.from('quest_participants').delete().eq('quest_id', questId);
+  const del = await sb.from('quest_participants').delete().eq('quest_id', questId).eq('rsvp', 'in');   // leave maybe / can't answers alone
   if (del.error) throw del.error;
   if (ids.length) {
-    const ins = await sb.from('quest_participants').insert(ids.map((user_id) => ({ quest_id: questId, user_id })));
+    const ins = await sb.from('quest_participants').upsert(ids.map((user_id) => ({ quest_id: questId, user_id, rsvp: 'in' })), { onConflict: 'quest_id,user_id' });
     if (ins.error) throw ins.error;
   }
 }
