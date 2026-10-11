@@ -437,7 +437,7 @@ function render() {
       <button class="icon-btn" data-act="profile" aria-label="Your profile">${avatar(state.profile.avatar_seed, 36)}</button>
     </header>
     <main>${state.tab === 'quests' ? viewQuests() : state.tab === 'calendar' ? viewCalendar() : state.tab === 'diary' ? viewDiary() : viewCrew()}</main>
-    ${state.tab === 'quests' || state.tab === 'calendar' ? `<button class="fab" data-act="new-quest">＋ New quest</button>` : ''}
+    ${state.tab === 'quests' || state.tab === 'calendar' ? `<button class="fab" data-act="new-quest" aria-label="New quest">＋</button>` : ''}
     <nav class="tabs">${tabs.map(([k, ic, lb]) => `<button class="${state.tab === k ? 'on' : ''}" data-act="tab" data-tab="${k}"><span>${ic}</span>${lb}</button>`).join('')}</nav>`;
 }
 
@@ -459,7 +459,13 @@ const questCard = (q) => {
 
 // The "group shot": every member standing together. Tap it to open the Crew tab.
 function crewScene() {
-  const row = state.members.map((m, i) => `<div class="mate" style="--i:${i}">${figure(m.avatar_seed, 128)}<span>${esc((m.display_name || '').split(' ')[0])}${m.id === myId() ? ' ★' : ''}</span></div>`).join('');
+  // Size the characters so everyone fits on screen (smaller as the crew grows). Past ~12 people it scrolls sideways.
+  const n = state.members.length || 1;
+  const avail = Math.min(window.innerWidth, 640) - 32 - 36;
+  const OV = 0.2;                                           // how much neighbours overlap
+  const h = Math.round(Math.max(60, Math.min(104, (avail / (n - OV * (n - 1))) * 1.46)));
+  const w = Math.round(h * 100 / 146);
+  const row = state.members.map((m, i) => `<div class="mate" style="--i:${i};margin-left:${i ? -Math.round(w * OV) : 0}px">${figure(m.avatar_seed, h)}<span style="max-width:${Math.max(w + 12, 44)}px">${esc((m.display_name || '').split(' ')[0])}${m.id === myId() ? ' ★' : ''}</span></div>`).join('');
   return `<div class="scene" data-act="tab" data-tab="crew" role="button" aria-label="The crew"><div class="scene-row">${row}</div></div>`;
 }
 
@@ -671,21 +677,29 @@ function newQuestSheet(date = '', preset = {}) {
 function questSheet(q) {
   const ids = q.quest_participants.map((p) => p.user_id);
   if (q.status === 'done') return doneSheet(q);
+  const mine = ids.includes(myId());
   openSheet(`
     <h2>${esc(q.title)}</h2>
-    <form data-form="editQuest" data-id="${q.id}">
-      <input type="text" name="title" required maxlength="120" value="${esc(q.title)}">
-      <textarea name="details" maxlength="2000" placeholder="Details">${esc(q.details || '')}</textarea>
-      <input type="text" name="location" maxlength="120" placeholder="Where?" value="${esc(q.location || '')}">
-      <label class="lbl">When?</label>
-      <input type="date" name="due_date" value="${q.due_date || ''}">
-      ${tagPicker(q.tags || [])}
-      <label class="lbl">Who's in?</label>
-      ${whoIn(ids)}
-      <button class="btn">Save changes</button>
-    </form>
+    <div class="meta">${q.due_date ? '📅 ' + fmtDate(q.due_date) : '📅 No date yet'}${q.location ? ` &nbsp;📍 ${esc(q.location)}` : ''}</div>
+    ${q.tags?.length ? `<div class="pills">${tagPills(q.tags)}</div>` : ''}
+    ${q.details ? `<p class="note" style="white-space:pre-wrap;margin:10px 0">${esc(q.details)}</p>` : ''}
+    <div class="qsum"><div class="faces">${ids.length ? ids.map((u) => face(u, 30)).join('') : '<span class="meta">Nobody yet</span>'}</div>
+      <button class="imin ${mine ? 'on' : ''}" data-act="imin" data-id="${q.id}" data-sheet="1">${mine ? "✓ I'm in" : "🙋 I'm in"}</button></div>
     <button class="btn primary" data-act="complete" data-id="${q.id}">✅ We did it!</button>
     ${q.due_date ? `<button class="btn" data-act="ics" data-id="${q.id}">📅 Add to my phone calendar</button>` : ''}
+    <details class="arch"><summary>✏️ Edit quest</summary>
+      <form data-form="editQuest" data-id="${q.id}" style="margin-top:10px">
+        <input type="text" name="title" required maxlength="120" value="${esc(q.title)}">
+        <textarea name="details" maxlength="2000" placeholder="Details">${esc(q.details || '')}</textarea>
+        <input type="text" name="location" maxlength="120" placeholder="Where?" value="${esc(q.location || '')}">
+        <label class="lbl">When?</label>
+        <input type="date" name="due_date" value="${q.due_date || ''}">
+        ${tagPicker(q.tags || [])}
+        <label class="lbl">Who's in?</label>
+        ${whoIn(ids)}
+        <button class="btn">Save changes</button>
+      </form>
+    </details>
     <button class="btn" data-act="archive-quest" data-id="${q.id}">📦 Archive (hide it, restore anytime)</button>
     ${(q.created_by === myId() || isFounder()) ? `<button class="btn danger" data-act="delete-quest" data-id="${q.id}">Delete quest</button>` : ''}`);
 }
@@ -699,7 +713,7 @@ function completeSheet(q) {
       <label class="lbl">What happened?</label>
       <textarea name="note" maxlength="4000" placeholder="The funny bits, the food, the plot twists…"></textarea>
       <label class="lbl">Photos (up to 6)</label>
-      <input type="file" name="photos" accept="image/*" multiple style="margin-bottom:10px">
+      ${photoPicker(6)}
       <label class="lbl">When was it?</label>
       <input type="date" name="done_on" required value="${(q.due_date && q.due_date <= today()) ? q.due_date : today()}">
       <label class="lbl">Who was there?</label>
@@ -750,7 +764,7 @@ function editEntrySheet(id) {
       <textarea name="note" maxlength="4000" placeholder="The funny bits, the food, the plot twists…">${esc(e.note || '')}</textarea>
       ${e.photo_paths.length ? `<label class="lbl">Photos (tap one to remove it)</label><div class="editphotos">${photos}</div>` : ''}
       <label class="lbl">Add photos (up to ${MAX_PHOTOS} in total)</label>
-      <input type="file" name="photos" accept="image/*" multiple style="margin-bottom:10px">
+      ${photoPicker(MAX_PHOTOS)}
       <label class="lbl">When was it?</label>
       <input type="date" name="done_on" required value="${esc(e.done_on)}">
       <label class="lbl">Who was there?</label>
@@ -818,8 +832,8 @@ function profileSheet() {
   openSheet(`
     <h2>Your profile</h2>
     <form data-form="profile">
-      <div class="av-hero">
-        <div id="av-stage" class="stage big" style="background:#${avDraft.bg}"><img id="av-prev" class="fig" height="190" width="130" src="${avatarUrl(avEncode(avDraft), 'full')}" alt="Your character"></div>
+      <div class="av-hero sticky">
+        <div id="av-stage" class="stage big" style="background:#${avDraft.bg}"><img id="av-prev" class="fig" height="140" width="96" src="${avatarUrl(avEncode(avDraft), 'full')}" alt="Your character"></div>
         <button type="button" class="btn" data-act="shuffle" style="width:auto;margin:0">🎲 Surprise me</button>
       </div>
       <div class="lvlcard"><b>Lv ${levelOf(myXp())} · ${esc(levelName(levelOf(myXp())))}</b>${xpBar(myXp())}${(() => { const n = nextUnlock(levelOf(myXp())); return n ? `<div class="xpmeta">Lv ${n.level} unlocks: ${esc(n.items.join(', '))}</div>` : ''; })()}<div class="xpmeta">Earn XP: +100 per finished quest, +30 per diary entry, +20 with photos.</div></div>
@@ -1066,6 +1080,26 @@ document.addEventListener('change', (ev) => {
   addPhotosToEntry(inp.dataset.addphotos, files).catch(fail);
 });
 
+// ---------- photo picker (styled button + thumbnails you can remove) ----------
+const photoPicker = (max) => `<div class="picker" data-max="${max}">
+  <label class="pickbtn">📷 Choose photos<input type="file" name="photos" accept="image/*" multiple hidden data-picker></label>
+  <div class="thumbs"></div><div class="meta pickmsg"></div></div>`;
+function drawPicker(inp) {
+  const box = inp.closest('.picker'), max = Number(box.dataset.max) || 6;
+  const files = [...inp.files];
+  box.querySelector('.thumbs').innerHTML = files.map((f, i) => `<div class="th"><img src="${URL.createObjectURL(f)}" alt=""><button type="button" data-rmpick="${i}" aria-label="Remove photo">✕</button></div>`).join('');
+  box.querySelector('.pickmsg').textContent = files.length > max ? `Only the first ${max} will be saved` : files.length ? `${files.length} photo${files.length > 1 ? 's' : ''} ready` : '';
+  box.querySelector('.pickbtn').firstChild.textContent = files.length ? '📷 Change photos' : '📷 Choose photos';
+}
+document.addEventListener('change', (ev) => { const inp = ev.target.closest?.('input[data-picker]'); if (inp) drawPicker(inp); });
+document.addEventListener('click', (ev) => {
+  const b = ev.target.closest?.('[data-rmpick]');
+  if (!b) return;
+  const inp = b.closest('.picker').querySelector('input[type=file]'), dt = new DataTransfer();
+  [...inp.files].forEach((f, i) => { if (i !== Number(b.dataset.rmpick)) dt.items.add(f); });
+  inp.files = dt.files; drawPicker(inp);
+});
+
 // ---------- push reminders ----------
 const b64ToU8 = (s) => { const p = '='.repeat((4 - s.length % 4) % 4), raw = atob((s + p).replace(/-/g, '+').replace(/_/g, '/')); return Uint8Array.from([...raw].map((c) => c.charCodeAt(0))); };
 async function pushStatus() {
@@ -1130,6 +1164,7 @@ const acts = {
     const mine = q.quest_participants.some((p) => p.user_id === myId());
     q.quest_participants = mine ? q.quest_participants.filter((p) => p.user_id !== myId()) : [...q.quest_participants, { user_id: myId() }];
     const y = window.scrollY; render(); window.scrollTo(0, y);   // instant feel; the database catches up
+    if (t.dataset.sheet) questSheet(q);
     const res = mine
       ? await sb.from('quest_participants').delete().match({ quest_id: q.id, user_id: myId() })
       : await sb.from('quest_participants').insert({ quest_id: q.id, user_id: myId() });
