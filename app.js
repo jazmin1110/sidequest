@@ -204,7 +204,7 @@ const memberById = (id) => state.members.find((m) => m.id === id);
 const face = (id, size = 28) => { const m = memberById(id); return avatar(m?.avatar_seed || id, size, m?.display_name || ''); };
 const fmtShort = (d) => d ? new Date(d + 'T00:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : '';
 const today = () => { const d = new Date(); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 10); };
-const fmtDate = (d) => d ? new Date(d + 'T00:00:00').toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' }) : '';
+const fmtDate = (d) => d ? new Date(d + 'T00:00:00').toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', ...(d.slice(0, 4) === String(new Date().getFullYear()) ? {} : { year: 'numeric' }) }) : '';
 
 // ---- when: start date/time + optional end date/time (multi-day quests) ----
 const fmtTime = (t) => { if (!t) return ''; const [h, m] = t.split(':').map(Number); return `${((h + 11) % 12) + 1}:${pad(m)} ${h < 12 ? 'AM' : 'PM'}`; };
@@ -217,6 +217,16 @@ function whenText(q) {
   }
   return `${fmtDate(q.due_date)}${st ? ' · ' + st + (et ? '–' + et : '') : ''}`;
 }
+// Little status chip for open quests: Today / Tomorrow / in 5 days / Happening now / Overdue.
+function countdown(q) {
+  if (q.status !== 'open' || !q.due_date) return null;
+  const t = today(), last = q.end_date || q.due_date;
+  if (q.due_date <= t && last >= t) return q.due_date === t && !q.end_date ? ['Today', 'hot'] : ['Happening now', 'hot'];
+  if (last < t) return ['Past due', 'late'];
+  const n = daysBetween(t, q.due_date) - 1;
+  return n === 1 ? ['Tomorrow', 'hot'] : n <= 30 ? [`in ${n} days`, ''] : null;
+}
+const cdChip = (q) => { const c = countdown(q); return c ? `<span class="cd ${c[1]}">${c[0]}</span>` : ''; };
 // Date/time inputs shared by the new + edit forms.
 const whenFields = (q = {}) => `
   <label class="lbl">Starts (leave empty for someday)</label>
@@ -506,8 +516,7 @@ function render() {
     </header>
     ${state.pending ? `<button class="pending" data-act="retry-outbox">📤 ${state.pending} upload${state.pending > 1 ? 's' : ''} waiting for signal · tap to retry</button>` : ''}
     <main>${state.tab === 'quests' ? viewQuests() : state.tab === 'calendar' ? viewCalendar() : state.tab === 'diary' ? viewDiary() : viewCrew()}</main>
-    ${state.tab === 'quests' || state.tab === 'calendar' ? `<button class="fab" data-act="new-quest" aria-label="New quest">＋</button>` : ''}
-    <nav class="tabs">${tabs.map(([k, ic, lb]) => `<button class="${state.tab === k ? 'on' : ''}" data-act="tab" data-tab="${k}"><span>${ic}</span>${lb}</button>`).join('')}</nav>`;
+    <nav class="tabs">${tabs.map(([k, ic, lb], i) => `${i === 2 ? '<button class="addtab" data-act="new-quest" aria-label="New quest"><b>＋</b>New</button>' : ''}<button class="${state.tab === k ? 'on' : ''}" data-act="tab" data-tab="${k}"><span>${ic}</span>${lb}</button>`).join('')}</nav>`;
 }
 
 const questCard = (q) => {
@@ -517,7 +526,7 @@ const questCard = (q) => {
     <button class="qmain" data-act="open-quest" data-id="${q.id}">
       <div class="qt">${esc(q.title)}</div>
       ${q.tags?.length ? `<div class="pills">${tagPills(q.tags)}</div>` : ''}
-      <div class="meta">${q.due_date ? '📅 ' + whenText(q) : ''}${q.location ? ` &nbsp;<span class="nw">📍 ${esc(q.location)}</span>` : ''}</div>
+      <div class="meta">${q.status === 'done' ? '<span class="cd ok">✓ Done</span>' : cdChip(q)}${q.due_date ? '📅 ' + whenText(q) : ''}${q.location ? ` &nbsp;<span class="nw">📍 ${esc(q.location)}</span>` : ''}</div>
     </button>
     <div class="qfoot">
       ${q.quest_participants.length ? `<div class="faces">${q.quest_participants.map((p) => face(p.user_id, 26)).join('')}</div>` : ''}${q.maybe?.length ? `<span class="maybe-n">+${q.maybe.length} maybe</span>` : ''}
@@ -532,9 +541,9 @@ function crewScene() {
   const n = state.members.length || 1;
   const avail = Math.min(window.innerWidth, 640) - 32 - 36;
   const OV = 0.2;                                           // how much neighbours overlap
-  const h = Math.round(Math.max(60, Math.min(104, (avail / (n - OV * (n - 1))) * 1.46)));
+  const h = Math.round(Math.max(56, Math.min(80, (avail / (n - OV * (n - 1))) * 1.46)));
   const w = Math.round(h * 100 / 146);
-  const row = state.members.map((m, i) => `<div class="mate" style="--i:${i};margin-left:${i ? -Math.round(w * OV) : 0}px">${figure(m.avatar_seed, h)}<span style="max-width:${Math.max(w + 12, 44)}px">${esc((m.display_name || '').split(' ')[0])}${m.id === myId() ? ' ★' : ''}</span></div>`).join('');
+  const row = state.members.map((m, i) => `<div class="mate" style="--i:${i};margin-left:${i ? -Math.round(w * OV) : 0}px">${figure(m.avatar_seed, h)}<span style="max-width:${Math.max(w + 26, 60)}px">${esc((m.display_name || '').split(' ')[0])}${m.id === myId() ? ' ★' : ''}</span></div>`).join('');
   return `<div class="scene" data-act="tab" data-tab="crew" role="button" aria-label="The crew"><div class="scene-row">${row}</div></div>`;
 }
 
@@ -565,9 +574,8 @@ function viewQuests() {
     ${progressStrip()}
     ${filterBar()}
     ${!filtered.length ? `<div class="empty" style="padding:24px"><p>No quests with that tag yet.</p></div>` : ''}
-    ${someday.length ? `<div class="nudge slim"><p><b>${someday.length}</b> quest${someday.length > 1 ? 's have' : ' has'} no date yet</p><button data-act="spin">🎲 Pick one</button></div>` : ''}
     ${dated.length ? `<div class="section-title">Coming up</div>${dated.map(questCard).join('')}` : ''}
-    ${someday.length ? `<div class="section-title">Someday</div>${someday.map(questCard).join('')}` : ''}
+    ${someday.length ? `<div class="section-title">Someday</div><div class="nudge slim"><p><b>${someday.length}</b> quest${someday.length > 1 ? 's have' : ' has'} no date yet</p><button data-act="spin">🎲 Pick one</button></div>${someday.map(questCard).join('')}` : ''}
     ${done.length ? `<div class="section-title">Done ✓</div>${done.map(questCard).join('')}` : ''}
     ${archivedSection()}`;
 }
@@ -804,9 +812,10 @@ function questSheet(q) {
   const ids = q.quest_participants.map((p) => p.user_id);
   if (q.status === 'done') return doneSheet(q);
   const mine = ids.includes(myId());
+  const started = !q.due_date || q.due_date <= today();   // "We did it!" only gets the spotlight once the day has come
   openSheet(`
     <h2>${esc(q.title)}</h2>
-    <div class="meta">📅 ${whenText(q)}${q.location ? ` &nbsp;📍 ${esc(q.location)}` : ''}</div>
+    <div class="meta">${cdChip(q)}📅 ${whenText(q)}${q.location ? ` &nbsp;📍 ${esc(q.location)}` : ''}</div>
     ${q.tags?.length ? `<div class="pills">${tagPills(q.tags)}</div>` : ''}
     ${q.details ? `<p class="note" style="white-space:pre-wrap;margin:10px 0">${esc(q.details)}</p>` : ''}
     <div class="rsvp">
@@ -815,12 +824,12 @@ function questSheet(q) {
       <button class="${q.no.includes(myId()) ? 'on no' : ''}" data-act="rsvp" data-val="no" data-id="${q.id}">✕ Can't</button>
     </div>
     <div class="who-list">
-      <div><b>In</b> ${ids.length ? `<span class="faces">${ids.map((u) => face(u, 28)).join('')}</span>` : '<span class="meta">nobody yet</span>'}</div>
-      ${q.maybe.length ? `<div><b>Maybe</b> <span class="faces">${q.maybe.map((u) => face(u, 28)).join('')}</span></div>` : ''}
-      ${q.no.length ? `<div><b>Can't</b> <span class="faces">${q.no.map((u) => face(u, 28)).join('')}</span></div>` : ''}
+      <div><b>In</b> ${ids.length ? `<span class="names">${ids.map((u) => `<span class="nm">${face(u, 24)}${esc((nameOf(u) || '').split(' ')[0])}</span>`).join('')}</span>` : '<span class="meta">nobody yet</span>'}</div>
+      ${q.maybe.length ? `<div><b>Maybe</b> <span class="names">${q.maybe.map((u) => `<span class="nm">${face(u, 24)}${esc((nameOf(u) || '').split(' ')[0])}</span>`).join('')}</span></div>` : ''}
+      ${q.no.length ? `<div><b>Can't</b> <span class="names">${q.no.map((u) => `<span class="nm">${face(u, 24)}${esc((nameOf(u) || '').split(' ')[0])}</span>`).join('')}</span></div>` : ''}
     </div>
-    <button class="btn primary" data-act="complete" data-id="${q.id}">✅ We did it!</button>
-    ${q.due_date ? `<button class="btn" data-act="ics" data-id="${q.id}">📅 Add to my phone calendar</button>` : ''}
+    <button class="btn ${started ? 'primary' : ''}" data-act="complete" data-id="${q.id}">✅ ${started ? 'We did it!' : 'We already did this'}</button>
+    ${q.due_date ? `<button class="btn line" data-act="ics" data-id="${q.id}">📅 Add to my phone calendar</button>` : ''}
     <details class="arch"><summary>✏️ Edit quest</summary>
       <form data-form="editQuest" data-id="${q.id}" style="margin-top:10px">
         <input type="text" name="title" required maxlength="120" value="${esc(q.title)}">
@@ -833,8 +842,10 @@ function questSheet(q) {
         <button class="btn">Save changes</button>
       </form>
     </details>
-    <button class="btn" data-act="archive-quest" data-id="${q.id}">📦 Archive (hide it, restore anytime)</button>
-    ${(q.created_by === myId() || isFounder()) ? `<button class="btn danger" data-act="delete-quest" data-id="${q.id}">Delete quest</button>` : ''}`);
+    <details class="arch"><summary>⋯ More</summary>
+      <button class="btn" data-act="archive-quest" data-id="${q.id}" style="margin-top:10px">📦 Archive (hide it, restore anytime)</button>
+      ${(q.created_by === myId() || isFounder()) ? `<button class="btn danger" data-act="delete-quest" data-id="${q.id}">Delete quest</button>` : ''}
+    </details>`);
 }
 
 function completeSheet(q) {
