@@ -205,6 +205,35 @@ const face = (id, size = 28) => { const m = memberById(id); return avatar(m?.ava
 const fmtShort = (d) => d ? new Date(d + 'T00:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : '';
 const today = () => { const d = new Date(); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 10); };
 const fmtDate = (d) => d ? new Date(d + 'T00:00:00').toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' }) : '';
+
+// ---- when: start date/time + optional end date/time (multi-day quests) ----
+const fmtTime = (t) => { if (!t) return ''; const [h, m] = t.split(':').map(Number); return `${((h + 11) % 12) + 1}:${pad(m)} ${h < 12 ? 'AM' : 'PM'}`; };
+const daysBetween = (a, b) => Math.round((new Date(b + 'T00:00:00') - new Date(a + 'T00:00:00')) / 864e5) + 1;
+function whenText(q) {
+  if (!q.due_date) return 'No date yet';
+  const st = q.start_time ? fmtTime(q.start_time.slice(0, 5)) : '', et = q.end_time ? fmtTime(q.end_time.slice(0, 5)) : '';
+  if (q.end_date && q.end_date > q.due_date) {
+    return `${fmtShort(q.due_date)}${st ? ', ' + st : ''} → ${fmtShort(q.end_date)}${et ? ', ' + et : ''} · ${daysBetween(q.due_date, q.end_date)} days`;
+  }
+  return `${fmtDate(q.due_date)}${st ? ' · ' + st + (et ? '–' + et : '') : ''}`;
+}
+// Date/time inputs shared by the new + edit forms.
+const whenFields = (q = {}) => `
+  <label class="lbl">Starts (leave empty for someday)</label>
+  <div class="row2"><input type="date" name="due_date" value="${esc(q.due_date || '')}" aria-label="Start date"><input type="time" name="start_time" value="${esc((q.start_time || '').slice(0, 5))}" aria-label="Start time"></div>
+  <label class="lbl">Ends (optional: only for trips / multi-day)</label>
+  <div class="row2"><input type="date" name="end_date" value="${esc(q.end_date || '')}" aria-label="End date"><input type="time" name="end_time" value="${esc((q.end_time || '').slice(0, 5))}" aria-label="End time"></div>`;
+// Reads + validates the above. Returns the columns to save.
+function readWhen(fd) {
+  let due = fd.get('due_date') || null, end = fd.get('end_date') || null, st = fd.get('start_time') || null, et = fd.get('end_time') || null;
+  if (end && !due) throw new Error('Pick a start date first');
+  if ((st || et) && !due) throw new Error('Pick a date for the time');
+  if (end && end < due) throw new Error('End date is before the start date');
+  if (end === due) end = null;
+  if (et && !st) throw new Error('Add a start time too');
+  if (!end && st && et && et <= st) throw new Error('End time must be after the start time');
+  return { due_date: due, end_date: end, start_time: st, end_time: et };
+}
 const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
 
 let toastTimer;
@@ -488,7 +517,7 @@ const questCard = (q) => {
     <button class="qmain" data-act="open-quest" data-id="${q.id}">
       <div class="qt">${esc(q.title)}</div>
       ${q.tags?.length ? `<div class="pills">${tagPills(q.tags)}</div>` : ''}
-      <div class="meta">${q.due_date ? '📅 ' + fmtDate(q.due_date) : ''}${q.location ? ` &nbsp;<span class="nw">📍 ${esc(q.location)}</span>` : ''}</div>
+      <div class="meta">${q.due_date ? '📅 ' + whenText(q) : ''}${q.location ? ` &nbsp;<span class="nw">📍 ${esc(q.location)}</span>` : ''}</div>
     </button>
     <div class="qfoot">
       ${q.quest_participants.length ? `<div class="faces">${q.quest_participants.map((p) => face(p.user_id, 26)).join('')}</div>` : ''}${q.maybe?.length ? `<span class="maybe-n">+${q.maybe.length} maybe</span>` : ''}
@@ -526,7 +555,7 @@ function viewQuests() {
   const all = state.quests;
   const filtered = state.filter ? all.filter((q) => (q.tags || []).includes(state.filter)) : all;
   const open = filtered.filter((q) => q.status === 'open');
-  const dated = open.filter((q) => q.due_date).sort((a, b) => a.due_date.localeCompare(b.due_date));
+  const dated = open.filter((q) => q.due_date).sort((a, b) => (a.due_date + (a.start_time || '')).localeCompare(b.due_date + (b.start_time || '')));
   const someday = open.filter((q) => !q.due_date);
   const done = filtered.filter((q) => q.status === 'done');
   const scene = state.members.length ? crewScene() : '';
@@ -654,12 +683,17 @@ const pad = (n) => String(n).padStart(2, '0');
 const dayKey = (y, m, d) => `${y}-${pad(m + 1)}-${pad(d)}`;
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 
-// The date a quest shows on: finished quests use the day they happened, open ones their due date.
-function questDay(q) {
-  if (q.status === 'done') return state.entries.find((e) => e.quest_id === q.id)?.done_on || q.due_date || null;
-  return q.due_date || null;
+// The days a quest covers: [first, last]. Done quests use the day they happened (or their planned span).
+function questSpan(q) {
+  if (q.status === 'done') {
+    if (q.due_date && q.end_date) return [q.due_date, q.end_date];
+    const d = state.entries.find((e) => e.quest_id === q.id)?.done_on || q.due_date || null;
+    return d ? [d, d] : null;
+  }
+  return q.due_date ? [q.due_date, q.end_date || q.due_date] : null;
 }
-function questsOn(date) { return state.quests.filter((q) => questDay(q) === date); }
+const questDay = (q) => questSpan(q)?.[0] || null;
+function questsOn(date) { return state.quests.filter((q) => { const sp = questSpan(q); return sp && sp[0] <= date && date <= sp[1]; }); }
 
 function shiftMonth(delta) {
   const c = state.cal || { y: new Date().getFullYear(), m: new Date().getMonth() };
@@ -684,7 +718,8 @@ function viewCalendar() {
     cells += `<button class="cal-cell ${key === t ? 'today' : ''} ${qs.length ? 'has' : ''}" data-act="cal-day" data-date="${key}"><span>${d}</span><div class="dots">${dots}</div>${label}</button>`;
   }
   const monthPrefix = `${y}-${pad(m + 1)}-`;
-  const inMonth = state.quests.filter((q) => (questDay(q) || '').startsWith(monthPrefix)).sort((a, b) => questDay(a).localeCompare(questDay(b)));
+  const mFirst = `${monthPrefix}01`, mLast = `${monthPrefix}31`;
+  const inMonth = state.quests.filter((q) => { const sp = questSpan(q); return sp && sp[0] <= mLast && sp[1] >= mFirst; }).sort((a, b) => questDay(a).localeCompare(questDay(b)));
   return `
     <div class="cal-head">
       <button class="icon-btn" data-act="cal-prev" aria-label="Previous month">‹</button>
@@ -712,12 +747,24 @@ function daySheet(date) {
 function downloadIcs(q) {
   if (!q?.due_date) return toast('Give the quest a date first');
   const compact = (d) => d.replaceAll('-', '');
-  const next = new Date(q.due_date + 'T00:00:00'); next.setDate(next.getDate() + 1);
-  const end = `${next.getFullYear()}${pad(next.getMonth() + 1)}${pad(next.getDate())}`;
+  const plus1 = (d) => { const n = new Date(d + 'T00:00:00'); n.setDate(n.getDate() + 1); return `${n.getFullYear()}${pad(n.getMonth() + 1)}${pad(n.getDate())}`; };
+  const hhmm = (t) => t.slice(0, 5).replace(':', '') + '00';
+  const lastDay = q.end_date || q.due_date;
+  let when;
+  if (q.start_time) {
+    // timed event (floating local time, so it lands at the same clock time for everyone)
+    let endStamp;
+    if (q.end_time) endStamp = `${compact(lastDay)}T${hhmm(q.end_time)}`;
+    else if (q.end_date) endStamp = `${compact(lastDay)}T235900`;
+    else { const [h, m] = q.start_time.split(':').map(Number); const tot = Math.min(h * 60 + m + 60, 1439); endStamp = `${compact(lastDay)}T${pad(Math.floor(tot / 60))}${pad(tot % 60)}00`; }
+    when = [`DTSTART:${compact(q.due_date)}T${hhmm(q.start_time)}`, `DTEND:${endStamp}`];
+  } else {
+    when = [`DTSTART;VALUE=DATE:${compact(q.due_date)}`, `DTEND;VALUE=DATE:${plus1(lastDay)}`];   // all-day; end is exclusive
+  }
   const txt = (s) => String(s ?? '').replace(/\\/g, '\\\\').replace(/\n/g, '\\n').replace(/,/g, '\\,').replace(/;/g, '\\;');
   const ics = ['BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//SideQuest//EN', 'BEGIN:VEVENT',
     `UID:${q.id}@sidequest`, `DTSTAMP:${new Date().toISOString().replace(/[-:]/g, '').slice(0, 15)}Z`,
-    `DTSTART;VALUE=DATE:${compact(q.due_date)}`, `DTEND;VALUE=DATE:${end}`,
+    ...when,
     `SUMMARY:${txt('SideQuest: ' + q.title)}`, q.location ? `LOCATION:${txt(q.location)}` : '', q.details ? `DESCRIPTION:${txt(q.details)}` : '',
     'END:VEVENT', 'END:VCALENDAR'].filter(Boolean).join('\r\n');
   const url = URL.createObjectURL(new Blob([ics], { type: 'text/calendar' }));
@@ -745,8 +792,7 @@ function newQuestSheet(date = '', preset = {}) {
       <input type="text" name="title" required maxlength="120" placeholder="What are we doing? e.g. Sunrise hike" value="${esc(preset.title || '')}">
       <textarea name="details" maxlength="2000" placeholder="Details (optional)"></textarea>
       <input type="text" name="location" maxlength="120" placeholder="Where? (optional)">
-      <label class="lbl">When? (leave empty for someday)</label>
-      <input type="date" name="due_date" value="${esc(date)}">
+      ${whenFields({ due_date: date })}
       ${tagPicker(preset.tags || [])}
       <label class="lbl">Who's in?</label>
       ${whoIn([myId()])}
@@ -760,7 +806,7 @@ function questSheet(q) {
   const mine = ids.includes(myId());
   openSheet(`
     <h2>${esc(q.title)}</h2>
-    <div class="meta">${q.due_date ? '📅 ' + fmtDate(q.due_date) : '📅 No date yet'}${q.location ? ` &nbsp;📍 ${esc(q.location)}` : ''}</div>
+    <div class="meta">📅 ${whenText(q)}${q.location ? ` &nbsp;📍 ${esc(q.location)}` : ''}</div>
     ${q.tags?.length ? `<div class="pills">${tagPills(q.tags)}</div>` : ''}
     ${q.details ? `<p class="note" style="white-space:pre-wrap;margin:10px 0">${esc(q.details)}</p>` : ''}
     <div class="rsvp">
@@ -780,8 +826,7 @@ function questSheet(q) {
         <input type="text" name="title" required maxlength="120" value="${esc(q.title)}">
         <textarea name="details" maxlength="2000" placeholder="Details">${esc(q.details || '')}</textarea>
         <input type="text" name="location" maxlength="120" placeholder="Where?" value="${esc(q.location || '')}">
-        <label class="lbl">When?</label>
-        <input type="date" name="due_date" value="${q.due_date || ''}">
+        ${whenFields(q)}
         ${tagPicker(q.tags || [])}
         <label class="lbl">Who's in?</label>
         ${whoIn(ids)}
@@ -1534,7 +1579,7 @@ const forms = {
       title: fd.get('title').trim(),
       details: fd.get('details').trim() || null,
       location: fd.get('location').trim() || null,
-      due_date: fd.get('due_date') || null,
+      ...readWhen(fd),
       tags: checkedTags(f),
       created_by: myId(),
     }).select().single();
@@ -1549,7 +1594,7 @@ const forms = {
       title: fd.get('title').trim(),
       details: fd.get('details').trim() || null,
       location: fd.get('location').trim() || null,
-      due_date: fd.get('due_date') || null,
+      ...readWhen(fd),
       tags: checkedTags(f),
     }).eq('id', id);
     if (error) throw error;
