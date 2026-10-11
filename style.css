@@ -178,7 +178,7 @@ label.lbl { display: block; font-size: 13px; font-weight: 700; color: var(--mute
 .cal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
 .cal-title { font-size: 20px; letter-spacing: -.02em; }
 .cal-title b { font-weight: 900; }
-.cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+.cal-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
 .cal-dow { text-align: center; font-size: 12px; font-weight: 800; color: var(--muted); padding: 4px 0; }
 .cal-cell {
   aspect-ratio: 1 / 1.05; border: 1px solid var(--line); border-radius: 12px; background: var(--card);
@@ -372,3 +372,22 @@ i.done { background: #35b36b; }
 .thumbs .th img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .thumbs .th button { position: absolute; top: 3px; right: 3px; width: 22px; height: 22px; border: 0; border-radius: 50%; background: rgba(0, 0, 0, .6); color: #fff; font-size: 11px; padding: 0; }
 .pickmsg { margin-top: 6px; }
+
+/* ---------- batch 2 ---------- */
+.nudge.slim { padding: 8px 12px; margin-bottom: 10px; }
+.nudge.slim button { padding: 6px 12px; font-size: 13px; }
+.strip { margin-bottom: 10px; }
+.lvlbtn { padding: 4px 10px; font-size: 14px; }
+.nw { white-space: nowrap; display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; }
+.quest .qt { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.photos.p1 { grid-template-columns: 1fr; }
+.photos.p1 a { aspect-ratio: 4 / 3; }
+.photos.p2, .photos.p4 { grid-template-columns: repeat(2, 1fr); }
+.photos.p3, .photos.p5 { grid-template-columns: repeat(3, 1fr); }
+.blank-entry { display: block; width: 100%; text-align: left; border: 1.5px dashed var(--line); background: transparent; border-radius: 12px; padding: 12px; color: var(--muted); font-weight: 700; font-size: 14px; margin: 8px 0; }
+button.blank-entry { color: var(--accent); border-color: var(--accent); }
+.cal-cell { aspect-ratio: auto; height: 64px; min-height: 0; justify-content: flex-start; gap: 1px; padding-top: 6px; overflow: hidden; }
+.cal-lbl { display: block; font-style: normal; font-size: 9.5px; font-weight: 700; line-height: 1.15; color: var(--accent); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cal-lbl.done { color: #2f9e6f; text-decoration: line-through; }
+.cal-more { font-style: normal; font-size: 9px; font-weight: 800; color: var(--muted); }
+.crewinfo { font-size: 12.5px; color: var(--accent); font-weight: 700; margin-top: 3px; }

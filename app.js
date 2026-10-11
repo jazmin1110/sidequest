@@ -198,6 +198,7 @@ const crewBadge = (g, size = 44) => `<span class="badge" style="background:#${g.
 const GROUP_COLS = 'id,name,invite_code,emoji,color,description,created_at,created_by';
 const memberById = (id) => state.members.find((m) => m.id === id);
 const face = (id, size = 28) => { const m = memberById(id); return avatar(m?.avatar_seed || id, size, m?.display_name || ''); };
+const fmtShort = (d) => d ? new Date(d + 'T00:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : '';
 const today = () => { const d = new Date(); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 10); };
 const fmtDate = (d) => d ? new Date(d + 'T00:00:00').toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' }) : '';
 const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
@@ -283,6 +284,22 @@ async function loadGroups() {
   const { data, error } = await sb.from('members').select(`groups(${GROUP_COLS})`).eq('user_id', myId());
   if (error) return fail(error);
   state.groups = (data || []).map((r) => r.groups).filter(Boolean);
+  await loadGroupInfo();
+}
+// Small "3 members · next: Pottery, Oct 16" line for each crew on the home screen. Best effort: skipped if it fails.
+async function loadGroupInfo() {
+  try {
+    const ids = state.groups.map((g) => g.id);
+    if (!ids.length) return;
+    const [m, q] = await Promise.all([
+      sb.from('members').select('group_id').in('group_id', ids),
+      sb.from('quests').select('group_id,title,due_date').in('group_id', ids).eq('status', 'open').eq('archived', false).gte('due_date', today()).order('due_date', { ascending: true }),
+    ]);
+    if (m.error || q.error) return;
+    state.groups.forEach((g) => {
+      g.info = { members: m.data.filter((x) => x.group_id === g.id).length, next: q.data.find((x) => x.group_id === g.id && x.due_date) || null };
+    });
+  } catch { /* the home cards still work without it */ }
 }
 
 // ---------- auth screen ----------
@@ -325,8 +342,9 @@ function showGroups() {
   unsubscribe(); state.group = null; localStorage.removeItem('sq_last');
   const list = state.groups.map((g) => `
     <button class="card" data-act="open-group" data-id="${g.id}">
-      <div class="crew-row">${crewBadge(g, 46)}<div><div class="qt" style="font-weight:800;font-size:18px">${esc(g.name)}</div>
-      <div class="meta">${esc(g.description || 'Tap to open')}</div></div></div>
+      <div class="crew-row">${crewBadge(g, 46)}<div style="min-width:0"><div class="qt" style="font-weight:800;font-size:18px">${esc(g.name)}</div>
+      <div class="meta">${esc(g.description || 'Tap to open')}</div>
+      ${g.info ? `<div class="crewinfo">👥 ${g.info.members}${g.info.next ? ` · next: <b>${esc(g.info.next.title)}</b>, ${fmtShort(g.info.next.due_date)}` : ' · nothing planned yet'}</div>` : ''}</div></div>
     </button>`).join('');
   $app.innerHTML = `
     <header class="top">
@@ -340,6 +358,7 @@ function showGroups() {
           <div class="hi">Your character</div>
           <div class="herolv">Lv ${levelOf(myXp())} · ${esc(levelName(levelOf(myXp())))}</div>
           ${xpBar(myXp())}
+          <div class="xpmeta">Finish quests to earn XP and unlock outfits.</div>
           <button class="btn primary" data-act="profile" style="margin:8px 0 0">👕 Dress up</button>
         </div>
       </section>
@@ -448,7 +467,7 @@ const questCard = (q) => {
     <button class="qmain" data-act="open-quest" data-id="${q.id}">
       <div class="qt">${esc(q.title)}</div>
       ${q.tags?.length ? `<div class="pills">${tagPills(q.tags)}</div>` : ''}
-      <div class="meta">${q.due_date ? '📅 ' + fmtDate(q.due_date) : ''}${q.location ? ` &nbsp;📍 ${esc(q.location)}` : ''}</div>
+      <div class="meta">${q.due_date ? '📅 ' + fmtDate(q.due_date) : ''}${q.location ? ` &nbsp;<span class="nw">📍 ${esc(q.location)}</span>` : ''}</div>
     </button>
     <div class="qfoot">
       ${q.quest_participants.length ? `<div class="faces">${q.quest_participants.map((p) => face(p.user_id, 26)).join('')}</div>` : ''}
@@ -474,7 +493,7 @@ function filterBar() {
   const counts = {};
   state.quests.forEach((q) => (q.tags || []).forEach((t) => { counts[t] = (counts[t] || 0) + 1; }));
   const used = TAGS.filter(([k]) => counts[k]);
-  if (!used.length) return '';
+  if (used.length < 2 || state.quests.length < 6) { state.filter = null; return ''; }
   if (state.filter && !counts[state.filter]) state.filter = null;
   return `<div class="filters">
     <button class="${!state.filter ? 'on' : ''}" data-act="filter" data-tag="">All</button>
@@ -496,7 +515,7 @@ function viewQuests() {
     ${progressStrip()}
     ${filterBar()}
     ${!filtered.length ? `<div class="empty" style="padding:24px"><p>No quests with that tag yet.</p></div>` : ''}
-    ${someday.length ? `<div class="nudge"><p><b>${someday.length}</b> quest${someday.length > 1 ? 's have' : ' has'} no date yet.</p><button data-act="spin">🎲 Pick one</button></div>` : ''}
+    ${someday.length ? `<div class="nudge slim"><p><b>${someday.length}</b> quest${someday.length > 1 ? 's have' : ' has'} no date yet</p><button data-act="spin">🎲 Pick one</button></div>` : ''}
     ${dated.length ? `<div class="section-title">Coming up</div>${dated.map(questCard).join('')}` : ''}
     ${someday.length ? `<div class="section-title">Someday</div>${someday.map(questCard).join('')}` : ''}
     ${done.length ? `<div class="section-title">Done ✓</div>${done.map(questCard).join('')}` : ''}
@@ -541,7 +560,7 @@ function entrySheet(id) {
 
 function photoGrid(e) {
   const imgs = e.photo_paths.map((p) => state.photoUrls[p]).filter(Boolean);
-  return imgs.length ? `<div class="photos">${imgs.map((u) => `<a href="${u}" target="_blank" rel="noopener"><img src="${u}" alt="" loading="lazy"></a>`).join('')}</div>` : '';
+  return imgs.length ? `<div class="photos p${Math.min(imgs.length, 5)}">${imgs.map((u) => `<a href="${u}" target="_blank" rel="noopener"><img src="${u}" alt="" loading="lazy"></a>`).join('')}</div>` : '';
 }
 
 function viewCrew() {
@@ -601,7 +620,8 @@ function viewCalendar() {
     const key = dayKey(y, m, d);
     const qs = questsOn(key);
     const dots = qs.slice(0, 3).map((q) => `<i class="${q.status}"></i>`).join('') + (qs.length > 3 ? '<b>+</b>' : '');
-    cells += `<button class="cal-cell ${key === t ? 'today' : ''} ${qs.length ? 'has' : ''}" data-act="cal-day" data-date="${key}"><span>${d}</span><div class="dots">${dots}</div></button>`;
+    const label = qs.length ? `<em class="cal-lbl ${qs[0].status}">${esc(qs[0].title)}</em>${qs.length > 1 ? `<em class="cal-more">+${qs.length - 1}</em>` : ''}` : '';
+    cells += `<button class="cal-cell ${key === t ? 'today' : ''} ${qs.length ? 'has' : ''}" data-act="cal-day" data-date="${key}"><span>${d}</span><div class="dots">${dots}</div>${label}</button>`;
   }
   const monthPrefix = `${y}-${pad(m + 1)}-`;
   const inMonth = state.quests.filter((q) => (questDay(q) || '').startsWith(monthPrefix)).sort((a, b) => questDay(a).localeCompare(questDay(b)));
@@ -1018,6 +1038,7 @@ function viewFeed() {
         <div class="head">${face(e.author_id, 34)}<div class="grow"><h3>${esc(q?.title || 'Quest')}</h3><div class="meta">${fmtDate(e.done_on)}${q?.location ? ` · 📍 ${esc(q.location)}` : ''}</div></div>${e.author_id === myId() ? `<button class="edit-btn" data-act="edit-entry" data-id="${e.id}" aria-label="Edit diary entry">✏️ Edit</button>` : ''}</div>
         ${e.note ? `<p class="note">${esc(e.note)}</p>` : ''}
         ${photoGrid(e)}
+        ${!e.note && !e.photo_paths.length ? (e.author_id === myId() ? `<button class="blank-entry" data-act="edit-entry" data-id="${e.id}">✏️ No story yet. Add what happened and a few photos.</button>` : `<div class="blank-entry plain">No story yet. Add a photo or say something 👇</div>`) : ''}
         ${who ? `<div class="faces">${who}</div>` : ''}
         <div class="react-row">${reactBar(e)}<button class="cbtn" data-act="open-entry" data-id="${e.id}">💬 ${cs.length || 'Comment'}</button>${addPhotosBtn(e)}</div>
         ${last ? `<button class="cprev" data-act="open-entry" data-id="${e.id}"><b>${esc(nameOf(last.author_id))}</b> ${esc(last.body)}</button>` : ''}
