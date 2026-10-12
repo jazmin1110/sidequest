@@ -414,6 +414,7 @@ function showGroups() {
         </div>
       </section>
       ${onboardingCard()}
+      <button class="card widgetrow" data-act="widget-setup"><span>📱</span><div><b>Home screen widget</b><div class="meta">See your next quest on your iPhone Home Screen</div></div><i>›</i></button>
       ${state.groups.length ? '' : `<div class="empty"><div class="big">🧭</div><p>No crew yet. Start one, or join with an invite code from a friend.</p></div>`}
       <div class="section-title">Start a new crew</div>
       <form data-form="createGroup" class="row">
