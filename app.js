@@ -340,6 +340,7 @@ async function loadGroupInfo() {
       sb.from('quests').select('group_id,title,due_date').in('group_id', ids).eq('status', 'open').eq('archived', false).gte('due_date', today()).order('due_date', { ascending: true }),
     ]);
     if (m.error || q.error) return;
+    try { const n = q.data.filter((x) => x.due_date === today()).length; if (n) navigator.setAppBadge?.(n); else navigator.clearAppBadge?.(); } catch { /* badges need iOS 16.4+ and a Home Screen install */ }
     state.groups.forEach((g) => {
       g.info = { members: m.data.filter((x) => x.group_id === g.id).length, next: q.data.find((x) => x.group_id === g.id && x.due_date) || null };
     });
@@ -1008,6 +1009,7 @@ function profileSheet() {
       <button class="btn primary">Save</button>
     </form>
     <div class="pwbox" id="push-box"></div>
+    <div class="pwbox"><label class="lbl">📱 Home screen widget</label><p class="meta" style="margin-bottom:8px">See your next quest and a countdown right on your iPhone Home Screen.</p><button type="button" class="btn" data-act="widget-setup">Set up widget</button></div>
     <form data-form="changePw" class="pwbox">
       <label class="lbl">Change password</label>
       <div class="row"><input type="password" name="pw" minlength="6" required placeholder="New password (6+)" autocomplete="new-password" style="margin:0"><button class="btn" style="margin:0;flex:none;width:auto">Update</button></div>
@@ -1373,6 +1375,35 @@ async function refreshPushBox() {
     ${st === 'on' || st === 'off' ? `<button type="button" class="btn ${st === 'off' ? 'primary' : ''}" data-act="push-toggle">${st === 'on' ? 'Turn off reminders' : 'Turn on reminders'}</button>` : ''}`;
 }
 
+// ---------- iPhone home screen widget (via the free Scriptable app) ----------
+async function widgetScript(reset) {
+  const { data: key, error } = await sb.rpc(reset ? 'reset_widget_key' : 'get_widget_key');
+  if (error || !key) throw error || new Error('no key');
+  const src = await (await fetch('./widget/sidequest-widget.js', { cache: 'no-store' })).text();
+  return src.replace('__KEY__', key).replace('__ENDPOINT__', SUPABASE_URL + '/functions/v1/widget').replace('__APP_URL__', location.origin + '/');
+}
+async function widgetSheet(reset) {
+  state.widgetScript = null;
+  openSheet(`
+    <h2>📱 Home screen widget</h2>
+    <p class="meta" style="margin-bottom:10px">Works with <b>Scriptable</b>, a free iPhone app. Takes about 2 minutes.</p>
+    <ol class="steps">
+      <li>Install <b>Scriptable</b> from the App Store.</li>
+      <li>Tap <b>Copy my widget script</b> below.</li>
+      <li>Open Scriptable → tap <b>＋</b> → paste → name it <b>SideQuest</b>.</li>
+      <li>On your Home Screen: hold an empty spot → <b>＋</b> → <b>Scriptable</b> → pick a size → Add.</li>
+      <li>Tap the widget → <b>Script</b>: SideQuest.</li>
+    </ol>
+    <button class="btn primary" id="wcopy" data-act="widget-copy" disabled>Getting your script…</button>
+    <textarea id="wtext" class="wtext" readonly hidden></textarea>
+    <p class="meta" style="margin:10px 0">Keep the script private. It has your personal key. Lost it or shared it by accident? Make a new key and the old widget stops working.</p>
+    <button class="btn danger" data-act="widget-reset">Make a new key</button>`);
+  try {
+    state.widgetScript = await widgetScript(reset);
+    const b = document.getElementById('wcopy'); if (b) { b.disabled = false; b.textContent = 'Copy my widget script'; }
+  } catch { const b = document.getElementById('wcopy'); if (b) b.textContent = "Couldn't load. Check your connection."; }
+}
+
 // ---------- click + submit routing ----------
 const acts = {
   'close-sheet': () => closeSheet(),
@@ -1432,6 +1463,13 @@ const acts = {
       ? await sb.from('quest_participants').upsert({ quest_id: q.id, user_id: myId(), rsvp: next }, { onConflict: 'quest_id,user_id' })
       : await sb.from('quest_participants').delete().match({ quest_id: q.id, user_id: myId() });
     if (res.error) { fail(res.error); await reloadGroup(); }
+  },
+  'widget-setup': () => widgetSheet(false),
+  'widget-reset': () => { if (confirm('Make a new key? Your current widget will stop working until you paste the new script.')) widgetSheet(true); },
+  'widget-copy': async () => {
+    if (!state.widgetScript) return toast('One sec…');
+    try { await navigator.clipboard.writeText(state.widgetScript); toast('Copied! Now paste it into Scriptable 📋'); }
+    catch { const t = document.getElementById('wtext'); t.hidden = false; t.value = state.widgetScript; t.focus(); t.select(); toast('Tap and hold the box → Select All → Copy'); }
   },
   'react-more': (t) => { state.reactOpen = t.dataset.entry; const y = window.scrollY; render(); window.scrollTo(0, y); },
   'av-locked': (t) => toast(`🔒 Unlocks at Lv ${t.dataset.need}. Finish quests to level up!`),

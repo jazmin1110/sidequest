@@ -485,3 +485,8 @@ main { padding-bottom: calc(env(safe-area-inset-bottom) + 96px); }
 .cal-lbl:not(.st):not(.en) { margin: 1px -8px 0; width: calc(100% + 16px); }
 .crew-row { align-items: flex-start; }
 .hero .stage { width: 94px; height: 140px; }
+
+/* ---------- widget setup ---------- */
+.steps { margin: 0 0 14px; padding-left: 20px; font-size: 14.5px; line-height: 1.5; }
+.steps li { margin-bottom: 6px; }
+.wtext { width: 100%; height: 120px; margin: 8px 0; font: 11px/1.3 ui-monospace, Menlo, monospace; border: 1.5px solid var(--line); border-radius: 12px; padding: 8px; background: var(--card); }
